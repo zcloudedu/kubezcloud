@@ -1,11 +1,11 @@
-#!/usr/bin/env bash
+#!/bin/bash
 ###################################################################
-# Script Name    : kubeeasy
+# Script Name    : kubezcloud
 # Version:       : v1.3.2
-# Description    : Install kubernetes (HA) cluster using kubeadm.
-# Create Date    : 2022-06-01
-# Author         : KongYu
-# Email          : 2385569970@qq.com
+# Description    : Install kubernetes cluster using kubeadm.
+# Create Date    : 2023-06-06
+# Author         : GUOChen
+# Email          : 2492246121@qq.com
 # Notable Changes: 1. 新增安装软件包并发执行任务
 #                  2. 新增私有容器registry仓库，用于集群拉取镜像
 #                  3. 修改容器镜像的操作
@@ -25,7 +25,7 @@ set -o pipefail # Use last non-zero exit code in a pipeline
 ######################################################################################################
 
 # 版本
-KUBE_VERSION="${KUBE_VERSION:-1.21.3}"
+KUBE_VERSION="${KUBE_VERSION:-1.25.2}"
 FLANNEL_VERSION="${FLANNEL_VERSION:-0.14.0}"
 METRICS_SERVER_VERSION="${METRICS_SERVER_VERSION:-0.5.0}"
 CALICO_VERSION="${CALICO_VERSION:-3.19.1}"
@@ -38,26 +38,26 @@ KUBE_DNSDOMAIN="${KUBE_DNSDOMAIN:-cluster.local}"
 KUBE_APISERVER="${KUBE_APISERVER:-apiserver.$KUBE_DNSDOMAIN}"
 KUBE_POD_SUBNET="${KUBE_POD_SUBNET:-10.244.0.0/16}"
 KUBE_SERVICE_SUBNET="${KUBE_SERVICE_SUBNET:-10.96.0.0/16}"
-KUBE_IMAGE_REPO="${KUBE_IMAGE_REPO:-dockerhub.kubeeasy.local:5000/kubernetes}"
-KUBE_NETWORK="${KUBE_NETWORK:-calico}"
-KUBE_STORAGE="${KUBE_STORAGE:-local}"
+KUBE_IMAGE_REPO="${KUBE_IMAGE_REPO:-registry.k8s.io}"
+KUBE_NETWORK="${KUBE_NETWORK:-flannel}"
+KUBE_STORAGE="${KUBE_STORAGE:-nfs}"
 KUBE_UI="${KUBE_UI:-kuboard}"
 KUBE_VIRT=${KUBE_VIRT:-kubevirt}
+KUBE_ISTIO=${KUBE_ISTIO:-istio}
+KUBE_HARBOR=${KUBE_HARBOR:-harbor}
 KUBE_ADDON="${KUBE_ADDON:-metrics-server}"
 KUBE_FLANNEL_TYPE="${KUBE_FLANNEL_TYPE:-vxlan}"
-KUBE_CRI="${KUBE_CRI:-docker}"
-KUBE_CRI_VERSION="${KUBE_CRI_VERSION:-latest}"
-KUBE_CRI_ENDPOINT="${KUBE_CRI_ENDPOINT:-/var/run/dockershim.sock}"
-DOCKER_DATA_ROOT="${DOCKER_DATA_ROOT:-/data/docker}"
+KUBE_CRI="${KUBE_CRI:-containerd}"
+#KUBE_CRI_VERSION="${KUBE_CRI_VERSION:-latest}"
+KUBE_CRI_ENDPOINT="${KUBE_CRI_ENDPOINT:-/var/run/containerd/containerd.sock}"
+#DOCKER_DATA_ROOT="${DOCKER_DATA_ROOT:-/data/docker}"
 
 # 定义的master和worker节点地址，以逗号分隔
 MASTER_NODES="${MASTER_NODES:-}"
 WORKER_NODES="${WORKER_NODES:-}"
 HOST="${HOST:-}"
 
-# 高可用配置
-VIRTUAL_IP=${VIRTUAL_IP:-}
-KUBE_APISERVER_PORT=${KUBE_APISERVER_PORT:-6443}
+
 
 # 定义在哪个节点上进行设置
 MGMT_NODE="${MGMT_NODE:-127.0.0.1}"
@@ -74,16 +74,16 @@ HOSTNAME_PREFIX="${HOSTNAME_PREFIX:-k8s}"
 
 # 脚本设置
 TMP_DIR="/tmp"
-LOG_FILE="/var/log/kubeeasy/install.log"
+LOG_FILE="/var/log/kubeinstall.log"
 SSH_OPTIONS="-o ConnectTimeout=600 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q"
 ERROR_INFO="\n\033[31mERROR Summary: \033[0m\n  "
 ACCESS_INFO="\n\033[32mACCESS Summary: \033[0m\n  "
-COMMAND_OUTPUT=""
+COMMAND_OUTPUT="  See detailed log >> /var/log/kubeinstall.log\n"
 SCRIPT_PARAMETER="$*"
-OFFLINE_DIR="${TMP_DIR}/kubeeasy"
+OFFLINE_DIR="${TMP_DIR}/kubezcloud"
 OFFLINE_TAG="${OFFLINE_TAG:-0}"
 OFFLINE_FILE=""
-OS_SUPPORT="centos7 centos8"
+OS_SUPPORT="centos9"
 GITHUB_PROXY="${GITHUB_PROXY:-https://gh.lework.workers.dev/}"
 SKIP_UPGRADE_PLAN=${SKIP_UPGRADE_PLAN:-false}
 UPGRADE_KERNEL_TAG="${UPGRADE_KERNEL_TAG:-0}"
@@ -112,13 +112,13 @@ function log::error() {
 
   local item
   item="[$(date +'%Y-%m-%d %H:%M:%S')] \033[31mERROR:   \033[0m$*"
-  ERROR_INFO="${ERROR_INFO}${item}\n  "
+  ERROR_INFO="${ERROR_INFO}${item}\n \n  See detailed log >> /var/log/kubeinstall.log"
   echo -e "${item}" | tee -a "$LOG_FILE"
+
 }
 
 function log::info() {
   # 基础日志
-
   printf "[%s] \033[32mINFO:    \033[0m%s\n" "$(date +'%Y-%m-%d %H:%M:%S')" "$*" | tee -a "$LOG_FILE"
 }
 
@@ -131,7 +131,7 @@ function log::warning() {
 function log::access() {
   # 访问信息
 
-  ACCESS_INFO="${ACCESS_INFO}$*\n  "
+  ACCESS_INFO="${ACCESS_INFO}$*\n  See detailed log >> /var/log/kubeinstall.log \n\n"
   printf "[%s] \033[32mINFO:    \033[0m%s\n" "$(date +'%Y-%m-%d %H:%M:%S')" "$*" | tee -a "$LOG_FILE"
 }
 
@@ -203,11 +203,13 @@ function utils::download_file() {
       if [[ \"${unzip_tag}\" == \"unzip\" ]]; then
         command -v unzip 2>/dev/null || yum install -y unzip
         unzip -o \"${dest}\" -d \"${dest_dirname}\"
+		
       fi
     else
       echo \"${dest} is exists!\"
     fi
   "
+
   local status="$?"
   check::exit_code "$status" "download" "download ${filename} file"
   return "$status"
@@ -228,13 +230,15 @@ function utils::is_element_in_array() {
   return 1
 }
 
+
+
 function command::exec() {
   # 执行命令
 
   local host=${1:-}
   shift
   local command="$*"
-
+  
   if [[ "${SUDO_TAG:-}" == "1" ]]; then
     sudo_options="sudo -H -n -u ${SUDO_USER}"
 
@@ -338,71 +342,8 @@ function command::rsync() {
   return $status
 }
 
-function utils::mount_disk() {
-  ## 挂载系统磁盘并格式化
-  local hosts=${HOST}
-  local disk="${MOUNT_DISK}"
-  local mount_dir="${DOCKER_DATA_ROOT:-}"
-  # mount disk
-  for host in ${hosts}; do
-    log::info "[disk]" "${host}: ${disk} disk pre"
-    command::exec "${host}" "
-      ## 创建挂载点
-      mkdir -p ${mount_dir}
-      umount ${disk} &> /dev/null || true
-      sed -i '/\/dev\/kubeeasy\/data/d' /etc/fstab
-      ## 清除磁盘
-      #sgdisk --zap-all ${disk}
-      #wipefs -a ${disk}
-      #dd if=/dev/zero of="${disk}" bs=1M count=100 oflag=direct,dsync
-      blkdiscard ${disk}
-      #partprobe ${disk}
-    "
 
-    log::info "[disk]" "${host}: ${disk} create physical volume"
-    command::exec "${host}" "
-      pvcreate -f ${disk}
-    "
-    check::exit_code "$?" "disk" "${host}: ${disk} create physical volume"
 
-    log::info "[disk]" "${host}: ${disk} create volume group"
-    command::exec "${host}" "
-      vgcreate -f kubeeasy ${disk}
-    "
-    check::exit_code "$?" "disk" "${host}: ${disk} create volume group"
-
-    log::info "[disk]" "${host}: ${disk} create logical volume"
-    command::exec "${host}" "
-      lvcreate -n data -l 100%vg kubeeasy
-    "
-    check::exit_code "$?" "disk" "${host}: ${disk} create logical volume"
-
-    log::info "[disk]" "${host}: ${disk} mount to ${mount_dir}"
-    command::exec "${host}" "
-      mkfs.xfs -f /dev/kubeeasy/data && \
-      echo '/dev/kubeeasy/data ${mount_dir} xfs defaults 0 0' >> /etc/fstab && \
-      mount /dev/kubeeasy/data ${mount_dir}
-    "
-    check::exit_code "$?" "disk" "${host}: ${disk} mount to ${mount_dir}"
-
-  done
-  log::info "[get]" "command: df -h /dev/mapper/kubeeasy-data"
-
-}
-
-function create::password() {
-
-  local hosts=${HOST}
-  local new_password="${NEW_SSH_PASSWORD:-}"
-  # mount disk
-  for host in ${hosts}; do
-    log::info "[password]" "${host}: change root password"
-    command::exec "${host}" "
-      echo ${new_password} | passwd --stdin root
-   "
-    check::exit_code "$?" "password" "${host}: change root password"
-  done
-}
 
 function script::stop_security() {
   # Disable firewalld
@@ -564,8 +505,8 @@ EOF
   cat <<EOF >/etc/profile.d/ssh-login-info.sh
 #!/bin/sh
 #
-# @Time    : 2022-04-13
-# @Author  : KongYu
+# @Time    : 2023-06-06
+# @Author  : GUOCHEN
 # @Desc    : ssh login banner
 
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -624,14 +565,14 @@ totaldisk=\$(df -h -x devtmpfs -x tmpfs -x debugfs -x aufs -x overlay --total 2>
 disktotal=\$(awk '{print \$2}' <<< "\${totaldisk}")
 diskused=\$(awk '{print \$3}' <<< "\${totaldisk}")
 diskusedper=\$(awk '{print \$5}' <<< "\${totaldisk}")
-DISK_INFO="\033[0;33m\${diskused}\033[0m/\033[1;34m\${disktotal}\033[0m (\033[0;33m\${diskusedper}\033[0m)"
+DISK_INFO="\033[0;33m\${diskused}\033[0m/\033[1;34m\${disktotal}\033[0m disk space used (\033[0;33m\${diskusedper}\033[0m)"
 
 # disk root
 totaldisk_root=\$(df -h -x devtmpfs -x tmpfs -x debugfs -x aufs -x overlay --total 2>/dev/null | egrep -v Filesystem | head -n1)
 disktotal_root=\$(awk '{print \$2}' <<< "\${totaldisk_root}")
 diskused_root=\$(awk '{print \$3}' <<< "\${totaldisk_root}")
 diskusedper_root=\$(awk '{print \$5}' <<< "\${totaldisk_root}")
-DISK_INFO_ROOT="\033[0;33m\${diskused_root}\033[0m/\033[1;34m\${disktotal_root}\033[0m (\033[0;33m\${diskusedper_root}\033[0m)"
+DISK_INFO_ROOT="\033[0;33m\${diskused_root}\033[0m/\033[1;34m\${disktotal_root}\033[0m root disk space used (\033[0;33m\${diskusedper_root}\033[0m)"
 
 # cpu
 cpu=\$(awk -F':' '/^model name/ {print \$2}' /proc/cpuinfo | uniq | sed -e 's/^[ \t]*//')
@@ -642,14 +583,14 @@ MODEL_NAME=\$cpu
 CPU_INFO="\$(( cpun*cpuc ))(cores) \$(grep '^cpu MHz' /proc/cpuinfo | tail -1 | awk '{print \$4}')(MHz) \${cpup}P(physical) \${cpuc}C(cores) \${cpun}L(processor)"
 
 # cpu usage
-CPU_USAGE=\$(echo 100 - \$(top -b -n 1 | grep Cpu | awk '{print \$8}') | bc)
+#CPU_USAGE=\$(echo CPU USER OF  \$(echo 100 - \$(top -b -n 1 | grep Cpu | awk '{print \$8}') | bc))
 
 # get the load averages
 read one five fifteen rest < /proc/loadavg
 LOADAVG_INFO="\033[0;33m\${one}\033[0m(1min) \033[0;33m\${five}\033[0m(5min) \033[0;33m\${fifteen}\033[0m(15min)"
 
 # mem
-MEM_INFO="\$(cat /proc/meminfo | awk '/MemTotal:/{total=\$2/1024/1024;next} /MemAvailable:/{use=total-\$2/1024/1024; printf("\033[0;33m%.2fGiB\033[0m/\033[1;34m%.2fGiB\033[0m (\033[0;33m%.2f%%\033[0m)",use,total,(use/total)*100);}')"
+MEM_INFO="\$(cat /proc/meminfo | awk '/MemTotal:/{total=\$2/1024/1024;next} /MemAvailable:/{use=total-\$2/1024/1024; printf("\033[0;33m%.2fGiB\033[0m of /\033[1;34m%.2fGiB\033[0m RAM used (\033[0;33m%.2f%%\033[0m)",use,total,(use/total)*100);}')"
 
 # network
 # extranet_ip=" and \$(curl -s ip.cip.cc)"
@@ -673,7 +614,6 @@ echo -e "
 
  \033[0;1;31mUptime\033[0m.............: \033[0;33m\${UPTIME_INFO}\033[0m
  \033[0;1;31mMemory Usage\033[0m.......: \${MEM_INFO}
- \033[0;1;31mCPU Usage\033[0m..........: \033[0;33m\${CPU_USAGE}%\033[0m
  \033[0;1;31mLoad Averages\033[0m......: \${LOADAVG_INFO}
  \033[0;1;31mDisk Total Usage\033[0m...: \${DISK_INFO}
  \033[0;1;31mDisk Root Usage\033[0m....: \${DISK_INFO_ROOT}
@@ -723,81 +663,103 @@ EOF
   systemctl enable chronyd
 
   module=(
-    ip_vs
-    ip_vs_rr
-    ip_vs_wrr
-    ip_vs_sh
+    #ip_vs
+    #ip_vs_rr
+    #ip_vs_wrr
+    #ip_vs_sh
     overlay
-    nf_conntrack
+    #nf_conntrack
     br_netfilter
   )
-  [ -f /etc/modules-load.d/ipvs.conf ] && cp -f /etc/modules-load.d/ipvs.conf{,_bak}
+  [ -f /etc/modules-load.d/containerd.conf ] && cp -f /etc/modules-load.d/containerd.conf{,_bak}
   for kernel_module in "${module[@]}"; do
-    /sbin/modinfo -F filename "$kernel_module" |& grep -qv ERROR && echo "$kernel_module" >>/etc/modules-load.d/ipvs.conf
+    /sbin/modinfo -F filename "$kernel_module" |& grep -qv ERROR && echo "$kernel_module" >>/etc/modules-load.d/containerd.conf
   done
   systemctl restart systemd-modules-load
   systemctl enable systemd-modules-load
   sysctl --system
-
+  #[ ! -d /home/dashboard-cn ] && mkdir /home/dashboard-cn;
+  modprobe br_netfilter;
+  #sed -i 's|#oom_score = 0|oom_score = -999|' /etc/containerd/config.toml;
   grep single-request-reopen /etc/resolv.conf || sed -i '1ioptions timeout:2 attempts:3 rotate single-request-reopen' /etc/resolv.conf
 
   ipvsadm --clear
   iptables -F && iptables -t nat -F && iptables -t mangle -F && iptables -X
 }
 
-function script::upgrade_kernel() {
-  # 升级内核
-  grub2-set-default 0 && grub2-mkconfig -o /etc/grub2.cfg
-  grubby --default-kernel
-  grubby --args="user_namespace.enable=1" --update-kernel="$(grubby --default-kernel)"
-}
 
-function script::install_docker() {
+
+function script::install_containerd() {
   # 安装 docker
-
+  
   local OFFLINE_TAG=${OFFLINE_TAG}
-  [[ ! -f "/usr/bin/docker" ]] && {
-    tar -zxvf ${OFFLINE_DIR}/packages/docker-v20.10.9.tar.gz -C /tmp
-    cp -rvf /tmp/docker/* /usr/bin/
-    mv /usr/bin/{docker.service,containerd.service} /etc/systemd/system/ || true
-    rm -rf /tmp/docker
-  }
+  # if [[ "${OFFLINE_TAG:-}" != "1" ]]; then
+        # [ -f /usr/bin/docker ] && yum remove -y docker-ce docker-ce-cli;
+        # [ -f /usr/bin/containerd ] && yum remove -y containerd.io;
+  # yum install -y "docker-ce${version}" "docker-ce-cli${version}" containerd.io bash-completion;	
+  # [[ ! -f "/usr/bin/docker" ]] && {
+    # tar -zxvf ${OFFLINE_DIR}/packages/docker-v20.10.9.tar.gz -C /tmp
+    # cp -rvf /tmp/docker/* /usr/bin/
+    # mv /usr/bin/{docker.service,containerd.service} /etc/systemd/system/ || true
+    # rm -rf /tmp/docker
+  # }
+  #[ -e /etc/cni/net.d/ ] && dnf  -y remove kubernetes-cni &&  dnf install -y --skip-broken   /tmp/packages/*kube*.rpm
+  #[ -f /usr/share/bash-completion/completions/docker ] && cp -f /usr/share/bash-completion/completions/docker /etc/bash_completion.d/;
+  #[ ! -d ${DOCKER_DATA_ROOT} ] && mkdir -p ${DOCKER_DATA_ROOT}
+  #[ ! -d /etc/docker ] && mkdir /etc/docker
 
-  [ ! -d ${DOCKER_DATA_ROOT} ] && mkdir -p ${DOCKER_DATA_ROOT}
-  [ ! -d /etc/docker ] && mkdir /etc/docker
-  cat <<EOF >/etc/docker/daemon.json
-{
-  "bip": "10.0.0.1/16",
-  "data-root": "${DOCKER_DATA_ROOT}",
-  "features": { "buildkit": true },
-  "log-driver": "json-file",
-  "log-opts": {
-    "max-size": "200m",
-    "max-file": "5"
-  },
-  "exec-opts": ["native.cgroupdriver=systemd"],
-  "insecure-registries": ["0.0.0.0/0"],
-  "registry-mirrors": [
-    "https://xf9m4ezh.mirror.aliyuncs.com"
-  ]
-}
+
+    cat  > /etc/resolv.conf <<EOF
+nameserver 114.114.114.114
+nameserver 223.5.5.5
 EOF
-  cat <<EOF >/etc/crictl.yaml
-runtime-endpoint: unix:///var/run/dockershim.sock
-image-endpoint: unix:///var/run/dockershim.sock
-timeout: 2
+    #[ ! -d /home/dashboard-cn ] && mkdir /home/dashboard-cn;
+	modprobe overlay;
+    modprobe br_netfilter;
+    cat  > /etc/sysctl.d/k8s.conf <<EOF
+net.bridge.bridge-nf-call-ip6tables = 1
+net.bridge.bridge-nf-call-iptables = 1
+EOF
+
+    sysctl -p /etc/sysctl.d/k8s.conf > /dev/null 2>&1;
+	sysctl --system;
+    mkdir -p /etc/containerd;
+    containerd config default | sudo tee /etc/containerd/config.toml;
+    sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' /etc/containerd/config.toml;
+    
+
+    cat <<EOF >/etc/crictl.yaml
+runtime-endpoint: unix:///var/run/containerd/containerd.sock
+image-endpoint: unix:///var/run/containerd/containerd.sock
+timeout: 0
 debug: false
 pull-image-on-create: true
 disable-pull-on-run: false
 EOF
-  systemctl daemon-reload
+  systemctl enable containerd;
+  systemctl restart containerd;
+  local IMAGE_NUM=$(crictl images |wc -l)
+  if [[ "$IMAGE_NUM"  -ne "40" ]]; then
+    ctr -n k8s.io images import ${OFFLINE_DIR}/images/images.tar; 
+  fi
+  log::info "[nerdctl]" "install the nerdctl";
+  cp ${OFFLINE_DIR}/tools/* /usr/bin/;
+  chmod +x /usr/bin/nerdctl;
+  log::info "[buildkit]" "install the buildkit";
+  chmod +x /usr/bin/buildkitd;
+  chmod +x /usr/bin/buildctl;
+  cat > /etc/systemd/system/buildkit.service <<EOF
+[Unit]
+Description=BuildKit
+Documentation=https://github.com/moby/buildkit
 
-  systemctl enable containerd
-  systemctl restart containerd
+[Service]
+ExecStart=/usr/bin/buildkitd --oci-worker=false --containerd-worker=true
 
-  systemctl enable docker
-  systemctl restart docker
-
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl enable buildkit --now
 }
 
 function script::install_kube() {
@@ -806,31 +768,32 @@ function script::install_kube() {
   local version="-${1:-latest}"
   version="${version#-latest}"
 
-  [[ ! -f "/usr/local/bin/kubeadm" ]] && {
-    ## 安装 kubeadm  kubectl  kubelet helm
-    tar -zxvf ${OFFLINE_DIR}/packages/kubernetes-v1.21.3.tar.gz -C /tmp
-    cp -rvf /tmp/kubernetes/* /usr/local/bin/
-    mv /usr/local/bin/kubelet.service /etc/systemd/system/
-    mkdir -p /etc/systemd/system/kubelet.service.d
-    mv /usr/local/bin/10-kubeadm.conf /etc/systemd/system/kubelet.service.d
-    rm -rf /tmp/kubernetes
-  }
-  [[ ! -f "/opt/cni/bin/" ]] && {
-    ## 安装 cni-plugins
-    mkdir -p /opt/cni/bin/
-    tar -zxvf ${OFFLINE_DIR}/packages/cni-plugins-linux-amd64-v1.0.1.tgz -C /opt/cni/bin/
-  }
+  # [[ ! -f "/usr/local/bin/kubeadm" ]] && {
+    # ## 安装 kubeadm  kubectl  kubelet helm
+    # tar -zxvf ${OFFLINE_DIR}/packages/kubernetes-v1.21.3.tar.gz -C /tmp
+    # cp -rvf /tmp/kubernetes/* /usr/local/bin/
+    # mv /usr/local/bin/kubelet.service /etc/systemd/system/
+    # mkdir -p /etc/systemd/system/kubelet.service.d
+    # mv /usr/local/bin/10-kubeadm.conf /etc/systemd/system/kubelet.service.d
+
+  # }
+  # [[ ! -f "/opt/cni/bin/" ]] && {
+    # ## 安装 cni-plugins
+    # mkdir -p /opt/cni/bin/
+    # tar -zxvf ${OFFLINE_DIR}/packages/cni-plugins-linux-amd64-v1.0.1.tgz -C /opt/cni/bin/
+  # }
 
   ## 添加命令自动补全
   [ -d /etc/bash_completion.d ] && {
     kubectl completion bash >/etc/bash_completion.d/kubectl
     kubeadm completion bash >/etc/bash_completion.d/kubadm
-    helm completion bash >/etc/bash_completion.d/helm
+    #helm completion bash >/etc/bash_completion.d/helm
   }
+  
   ## 启动kubelet服务
   systemctl daemon-reload
   systemctl enable kubelet
-  systemctl enable --now iscsid
+
 }
 
 function check::command_exists() {
@@ -1162,30 +1125,17 @@ function install::package() {
   for host in $MASTER_NODES $WORKER_NODES; do
     # install docker
     log::info "[install]" "install ${KUBE_CRI} on $host."
+	# export DOCKER_DATA_ROOT=${DOCKER_DATA_ROOT}
     command::exec "${host}" "
       export OFFLINE_TAG=${OFFLINE_TAG:-0}
-      export DOCKER_DATA_ROOT=${DOCKER_DATA_ROOT}
       export OFFLINE_DIR=${OFFLINE_DIR}
-      $(declare -f script::install_docker)
-      script::install_docker
+      $(declare -f script::install_containerd)
+      script::install_containerd
     "
     check::exit_code "$?" "install" "install ${KUBE_CRI} on $host"
   done
 
-  # load and push images to registry
-  [[ ${INSTALL_TAG:-} == "1" ]] && {
-    log::info "[images]" "load and push images to registry on $MGMT_NODE_IP."
-    command::exec "${MGMT_NODE_IP}" "
-    [[ \$(docker images -qa | wc -l) == \"0\" ]] && docker load -i ${OFFLINE_DIR}/images/k8s-images.tar.gz
-    [[ \$(docker ps -a | grep registry | wc -l) == \"0\" ]] && docker run -d -v /data/registry:/var/lib/registry -e REGISTRY_STORAGE_DELETE_ENABLED=true -p 5000:5000 --restart=always --privileged=true --name registry dockerhub.kubeeasy.local:5000/registry:2.7
-    images=\$(cat ${OFFLINE_DIR}/images/images-list.txt)
-    for image in \$images
-    do
-      nohup docker push \$image &> /dev/null &
-    done
-  "
-    check::exit_code "$?" "images" "load and push images to registry on $host"
-  }
+
 
   for host in $MASTER_NODES $WORKER_NODES; do
     # install kube
@@ -1193,7 +1143,7 @@ function install::package() {
     command::exec "${host}" "
       export OFFLINE_TAG=${OFFLINE_TAG:-0}
       export host=${host}
-      export KUBE_APISERVER_PORT=${KUBE_APISERVER_PORT}
+      export KUBE_APISERVER_PORT=6443
       export OFFLINE_DIR=${OFFLINE_DIR}
       $(declare -f script::install_kube)
       script::install_kube $KUBE_VERSION
@@ -1210,32 +1160,13 @@ function install::package() {
 
   if [[ "${ADD_TAG:-}" == "1" ]]; then
     command::exec "${MGMT_NODE}" "
-      kubectl get node --selector='node-role.kubernetes.io/master' -o jsonpath='{$.items[*].status.addresses[?(@.type==\"InternalIP\")].address}'
+      kubectl get node --selector='node-role.kubernetes.io/control-plane' -o jsonpath='{$.items[*].status.addresses[?(@.type==\"InternalIP\")].address}'
     "
     get::command_output "apiservers" "$?"
   fi
 }
 
-function init::upgrade_kernel() {
-  # 升级节点内核
 
-  [[ "${UPGRADE_KERNEL_TAG:-}" != "1" ]] && return
-
-  for host in ${HOST}; do
-    log::info "[init]" "upgrade kernel: $host"
-    command::exec "${host}" "
-      export OFFLINE_TAG=${OFFLINE_TAG:-0}
-      $(declare -f script::upgrade_kernel)
-      script::upgrade_kernel
-    "
-    check::exit_code "$?" "init" "upgrade kernel $host" "exit"
-  done
-  for host in ${HOST}; do
-    command::exec "${host}" "bash -c 'sleep 15 && reboot' &>/dev/null &"
-    check::exit_code "$?" "reboot" "$host: wait for 15s to restart"
-  done
-  exit 0
-}
 
 function init::node_config() {
   # 初始化节点配置
@@ -1274,7 +1205,7 @@ function init::node_config() {
       cat << EOF >> /etc/hosts
 ## kubeeasy managed start
 ${KUBE_APISERVER_IP} $KUBE_APISERVER
-${MGMT_NODE} dockerhub.kubeeasy.local
+${MGMT_NODE} zcloud.kubeeasy.local
 $(
       echo -e $node_hosts
     )
@@ -1307,7 +1238,6 @@ EOF
       cat << EOF >> /etc/hosts
 ## kubeeasy managed start
 ${KUBE_APISERVER_IP} $KUBE_APISERVER
-${MGMT_NODE} dockerhub.kubeeasy.local
 $(
       echo -e $node_hosts
     )
@@ -1324,8 +1254,6 @@ EOF
 
 function init::node() {
   # 初始化节点
-
-  init::upgrade_kernel
 
   local node_hosts=""
   local i=1
@@ -1346,7 +1274,7 @@ function init::node() {
 function init::add_node() {
   # 初始化添加的节点
 
-  init::upgrade_kernel
+  #init::upgrade_kernel
 
   local master_index=0
   local worker_index=0
@@ -1354,7 +1282,7 @@ function init::add_node() {
   local add_node_hosts="127.0.0.1 temp"
 
   command::exec "${MGMT_NODE}" "
-    kubectl get node --selector='node-role.kubernetes.io/master' -o jsonpath='{range.items[*]}{.status.addresses[?(@.type==\"InternalIP\")].address } {end}' | awk '{print \$1}'
+    kubectl get node --selector='node-role.kubernetes.io/control-plane' -o jsonpath='{range.items[*]}{.status.addresses[?(@.type==\"InternalIP\")].address } {end}' | awk '{print \$1}'
   "
   get::command_output "MGMT_NODE" "$?" "exit"
 
@@ -1373,7 +1301,7 @@ function init::add_node() {
 
   if [[ "$MASTER_NODES" != "" ]]; then
     command::exec "${MGMT_NODE}" "
-      kubectl get node --selector='node-role.kubernetes.io/master' -o jsonpath='{\$.items[*].metadata.name}' | grep -Eo '[0-9]+\$'
+      kubectl get node --selector='node-role.kubernetes.io/control-plane' -o jsonpath='{\$.items[*].metadata.name}' | grep -Eo '[0-9]+\$'
     "
     get::command_output "master_index" "$?" "exit"
     master_index=$((master_index + 1))
@@ -1386,7 +1314,7 @@ function init::add_node() {
 
   if [[ "$WORKER_NODES" != "" ]]; then
     command::exec "${MGMT_NODE}" "
-      kubectl get node --selector='!node-role.kubernetes.io/master' -o jsonpath='{\$.items[*].metadata.name}' | grep -Eo '[0-9]+\$' || echo 0
+      kubectl get node --selector='!node-role.kubernetes.io/control-plane' -o jsonpath='{\$.items[*].metadata.name}' | grep -Eo '[0-9]+\$' || echo 0
     "
     get::command_output "worker_index" "$?" "exit"
     worker_index=$((worker_index + 1))
@@ -1423,36 +1351,36 @@ function kubeadm::init() {
     echo \"root_pass=${SSH_PASSWORD}\" >> /root/.kubeeasy/cluster
   "
   # 配置kube-vip yaml
-  if [[ -n "${VIRTUAL_IP}" ]]; then
-    command::exec "${MGMT_NODE}" "
-    # 标记是HA集群
-    mkdir -p /root/.kubeeasy/
-    echo \"ha=1\" > /root/.kubeeasy/cluster
-    echo \"vip=${VIRTUAL_IP}\" >> /root/.kubeeasy/cluster
-    echo \"root_pass=${SSH_PASSWORD}\" >> /root/.kubeeasy/cluster
-    "
-    if [[ "${OFFLINE_TAG:-}" == "1" ]]; then
-      log::info "[kube-vip]" "kube-vip init on ${MGMT_NODE}"
-      command::exec "${MGMT_NODE}" "
-        mkdir -p /etc/kubernetes/manifests
-        \cp \"${TMP_DIR}/kubeeasy/manifests/kube-vip.yaml\" \"/etc/kubernetes/manifests/kube-vip.yaml\"
-      "
-      check::exit_code "$?" "kube-vip" "${MGMT_NODE}: kube-vip init" "exit"
-    fi
-    # 获取网卡名
-    log::info "[init]" "Get ${MGMT_NODE} NIC Name."
-    command::exec "${MGMT_NODE}" "
-      ip -4 route get 8.8.8.8 2>/dev/null | head -1 | awk '{print \$5}'
-    "
-    get::command_output "nic_name" "$?" "exit"
+  # if [[ -n "${VIRTUAL_IP}" ]]; then
+    # command::exec "${MGMT_NODE}" "
+    # # 标记是HA集群
+    # mkdir -p /root/.kubeeasy/
+    # echo \"ha=1\" > /root/.kubeeasy/cluster
+    # echo \"vip=${VIRTUAL_IP}\" >> /root/.kubeeasy/cluster
+    # echo \"root_pass=${SSH_PASSWORD}\" >> /root/.kubeeasy/cluster
+    # "
+    # if [[ "${OFFLINE_TAG:-}" == "1" ]]; then
+      # log::info "[kube-vip]" "kube-vip init on ${MGMT_NODE}"
+      # command::exec "${MGMT_NODE}" "
+        # mkdir -p /etc/kubernetes/manifests
+        # \cp \"${TMP_DIR}/kubeeasy/manifests/kube-vip.yaml\" \"/etc/kubernetes/manifests/kube-vip.yaml\"
+      # "
+      # check::exit_code "$?" "kube-vip" "${MGMT_NODE}: kube-vip init" "exit"
+    # fi
+    # # 获取网卡名
+    # log::info "[init]" "Get ${MGMT_NODE} NIC Name."
+    # command::exec "${MGMT_NODE}" "
+      # ip -4 route get 8.8.8.8 2>/dev/null | head -1 | awk '{print \$5}'
+    # "
+    # get::command_output "nic_name" "$?" "exit"
 
-    log::info "[set]" "set kube-vip.yaml nic&vip to ${MGMT_NODE}"
-    command::exec "${MGMT_NODE}" "
-      sed -i \"s#ens33#${nic_name}#g\" /etc/kubernetes/manifests/kube-vip.yaml
-      sed -i \"s#192.168.200.10#${VIRTUAL_IP}#g\" /etc/kubernetes/manifests/kube-vip.yaml
-    "
-    check::exit_code "$?" "set" "${MGMT_NODE}: set kube-vip.yaml nic&vip" "exit"
-  fi
+    # log::info "[set]" "set kube-vip.yaml nic&vip to ${MGMT_NODE}"
+    # command::exec "${MGMT_NODE}" "
+      # sed -i \"s#ens33#${nic_name}#g\" /etc/kubernetes/manifests/kube-vip.yaml
+      # sed -i \"s#192.168.200.10#${VIRTUAL_IP}#g\" /etc/kubernetes/manifests/kube-vip.yaml
+    # "
+    # check::exit_code "$?" "set" "${MGMT_NODE}: set kube-vip.yaml nic&vip" "exit"
+  # fi
 
   # 初始化k8s
   log::info "[kubeadm init]" "kubeadm init on ${MGMT_NODE}"
@@ -1461,36 +1389,38 @@ function kubeadm::init() {
     mkdir -p /etc/kubernetes/
     cat << EOF > /etc/kubernetes/kubeadm-config.yaml
 ---
-apiVersion: kubeadm.k8s.io/v1beta2
+apiVersion: kubeadm.k8s.io/v1beta3
 kind: InitConfiguration
-${kubelet_nodeRegistration}
 nodeRegistration:
-  criSocket: /var/run/dockershim.sock
-  kubeletExtraArgs:
-    cgroup-driver: systemd
-  taints:
-  - effect: NoSchedule
-    key: node-role.kubernetes.io/master
+  criSocket: unix:///var/run/containerd/containerd.sock
+  imagePullPolicy: IfNotPresent
+  taints: null
+  pod-infra-container-image: k8s.gcr.io/pause:3.6
 ---
-apiVersion: kubeproxy.config.k8s.io/v1alpha1
-kind: KubeProxyConfiguration
-mode: ipvs
-ipvs:
-  minSyncPeriod: 5s
-  syncPeriod: 5s
-  scheduler: 'wrr'
----
-apiVersion: kubelet.config.k8s.io/v1beta1
-kind: KubeletConfiguration
-cgroupDriver: systemd
-maxPods: 200
-featureGates:
-  CSIStorageCapacity: true
-  ExpandCSIVolumes: true
-  RotateKubeletServerCertificate: true
-  TTLAfterFinished: true
----
-apiVersion: kubeadm.k8s.io/v1beta2
+apiServer:
+  timeoutForControlPlane: 4m0s
+  certSANs:
+  - 127.0.0.1
+  - $KUBE_APISERVER
+$(for h in $MASTER_NODES; do echo "  - $h"; done)
+  extraArgs:
+    event-ttl: '720h'
+    service-node-port-range: '1-65535'
+  extraVolumes:
+  - name: localtime
+    hostPath: /etc/localtime
+    mountPath: /etc/localtime
+    readOnly: true
+    pathType: File
+apiVersion: kubeadm.k8s.io/v1beta3
+certificatesDir: /etc/kubernetes/pki
+clusterName: kubernetes
+controllerManager: {}
+dns: {}
+etcd:
+  local:
+    dataDir: /var/lib/etcd
+imageRepository: $KUBE_IMAGE_REPO
 kind: ClusterConfiguration
 kubernetesVersion: $KUBE_VERSION
 controlPlaneEndpoint: $KUBE_APISERVER:${KUBE_PORT}
@@ -1498,50 +1428,7 @@ networking:
   dnsDomain: $KUBE_DNSDOMAIN
   podSubnet: $KUBE_POD_SUBNET
   serviceSubnet: $KUBE_SERVICE_SUBNET
-imageRepository: $KUBE_IMAGE_REPO
-apiServer:
-  certSANs:
-  - 127.0.0.1
-  - $KUBE_APISERVER
-$(for h in $MASTER_NODES; do echo "  - $h"; done)
-  extraArgs:
-    event-ttl: '720h'
-    service-node-port-range: '1024-65535'
-  extraVolumes:
-  - name: localtime
-    hostPath: /etc/localtime
-    mountPath: /etc/localtime
-    readOnly: true
-    pathType: File
-controllerManager:
-  extraArgs:
-    bind-address: 0.0.0.0
-    node-cidr-mask-size: '24'
-    deployment-controller-sync-period: '10s'
-    node-monitor-grace-period: '20s'
-    pod-eviction-timeout: '2m'
-    terminated-pod-gc-threshold: '30'
-    experimental-cluster-signing-duration: 87600h
-    feature-gates: RotateKubeletServerCertificate=true
-  extraVolumes:
-  - hostPath: /etc/localtime
-    mountPath: /etc/localtime
-    name: localtime
-    readOnly: true
-    pathType: File
-scheduler:
-  extraArgs:
-    bind-address: 0.0.0.0
-  extraVolumes:
-  - hostPath: /etc/localtime
-    mountPath: /etc/localtime
-    name: localtime
-    readOnly: true
-    pathType: File
-dns:
-  type: CoreDNS
-  imageRepository: dockerhub.kubeeasy.local:5000/kubernetes
-  imageTag: 1.8.0
+scheduler: {}
 EOF
 "
   check::exit_code "$?" "kubeadm init" "${MGMT_NODE}: set kubeadm-config.yaml" "exit"
@@ -1564,13 +1451,12 @@ EOF
 
   # 去除所有节点（包括master节点）的污点
   local KUBE_APISERVER_IP="${MGMT_NODE}"
-  [ "${VIRTUAL_IP}" != "" ] && KUBE_APISERVER_IP=${VIRTUAL_IP}
+  # 去除了vip
   log::info "[kubeadm init]" "${MGMT_NODE}: delete master taint"
   command::exec "${MGMT_NODE}" "
     # 给master去除污点并打上worker标签
     sed -i 's#.*$KUBE_APISERVER#$KUBE_APISERVER_IP $KUBE_APISERVER#g' /etc/hosts
-    kubectl taint nodes \$(hostname) node-role.kubernetes.io/master-
-    kubectl label node \$(hostname) node-role.kubernetes.io/worker= --overwrite
+    kubectl taint nodes $(hostname) node-role.kubernetes.io/control-plane:NoSchedule-
   "
   check::exit_code "$?" "kubeadm init" "${MGMT_NODE}: delete master taint"
 
@@ -1585,65 +1471,56 @@ EOF
 function kubeadm::join() {
   # 加入集群
   local KUBE_PORT="6443"
-  [ -n "${VIRTUAL_IP}" ] && KUBE_PORT=${KUBE_APISERVER_PORT}
-  log::info "[kubeadm join]" "master: get join token and cert info"
+  # 去除了vip
+  log::info "[result]" "master: get join token and cert info"
   command::exec "${MGMT_NODE}" "
-    openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt | openssl rsa -pubin -outform der 2>/dev/null | openssl dgst -sha256 -hex | sed 's/^.* //'
-  "
-  get::command_output "CACRT_HASH" "$?" "exit"
-
-  command::exec "${MGMT_NODE}" "
-    kubeadm init phase upload-certs --upload-certs --config /etc/kubernetes/kubeadm-config.yaml 2>> /dev/null | tail -1
-  "
-  get::command_output "INTI_CERTKEY" "$?" "exit"
-
-  command::exec "${MGMT_NODE}" "
-    kubeadm token create
+    kubeadm token create --print-join-command
   "
   get::command_output "INIT_TOKEN" "$?" "exit"
+  
 
   # 配置kube-vip yaml
-  command::exec "${MGMT_NODE}" "
-    cat ~/.kubeeasy/cluster | grep \"ha\" | cut -d = -f 2
-  "
-  get::command_output "ha_tag" "$?" "exit"
-  command::exec "${MGMT_NODE}" "
-    cat ~/.kubeeasy/cluster | grep \"vip\" | cut -d = -f 2
-  "
-  get::command_output "vip" "$?" "exit"
-  if [[ "${vip}" != "0" ]]; then
-    # 拷贝kube-vip yaml
-    for host in $MASTER_NODES; do
-      [[ "${MGMT_NODE}" == "$host" ]] && continue
-      log::info "[scp]" "scp kube-vip.yaml to ${host}"
-      command::exec "${host}" "
-        mkdir -p /etc/kubernetes/manifests
-      "
-      command::scp "${host}" "/etc/kubernetes/manifests/kube-vip.yaml" "/etc/kubernetes/manifests"
-      command::scp "${host}" "/root/.kubeeasy/" "/root"
-      check::exit_code "$?" "scp" "${host}: scp kube-vip.yaml" "exit"
-    done
-  fi
+  # command::exec "${MGMT_NODE}" "
+    # cat ~/.kubeeasy/cluster | grep \"ha\" | cut -d = -f 2
+  # "
+  # get::command_output "ha_tag" "$?" "exit"
+  # command::exec "${MGMT_NODE}" "
+    # cat ~/.kubeeasy/cluster | grep \"vip\" | cut -d = -f 2
+  # "
+  # get::command_output "vip" "$?" "exit"
+  # if [[ "${vip}" != "0" ]]; then
+    # # 拷贝kube-vip yaml
+    # for host in $MASTER_NODES; do
+      # [[ "${MGMT_NODE}" == "$host" ]] && continue
+      # log::info "[scp]" "scp kube-vip.yaml to ${host}"
+      # command::exec "${host}" "
+        # mkdir -p /etc/kubernetes/manifests
+      # "
+      # command::scp "${host}" "/etc/kubernetes/manifests/kube-vip.yaml" "/etc/kubernetes/manifests"
+      # command::scp "${host}" "/root/.kubeeasy/" "/root"
+      # check::exit_code "$?" "scp" "${host}: scp kube-vip.yaml" "exit"
+    # done
+  # fi
 
-  # 修改kube-vip 网卡名和vip
-  if [[ "${vip}" != "0" ]]; then
-    for host in ${MASTER_NODES}; do
-      [[ "${MGMT_NODE}" == "$host" ]] && continue
-      # 获取网卡名
-      log::info "[init]" "Get ${host} NIC Name."
-      command::exec "${host}" "
-        ip -4 route get 8.8.8.8 2>/dev/null | head -1 | awk '{print \$5}'
-      "
-      get::command_output "nic_name" "$?" "exit"
+  # # 修改kube-vip 网卡名和vip
+  # if [[ "${vip}" != "0" ]]; then
+    # for host in ${MASTER_NODES}; do
+      # [[ "${MGMT_NODE}" == "$host" ]] && continue
+      # # 获取网卡名
+      # log::info "[init]" "Get ${host} NIC Name."
+      # command::exec "${host}" "
+        # ip -4 route get 8.8.8.8 2>/dev/null | head -1 | awk '{print \$5}'
+      # "
+      # get::command_output "nic_name" "$?" "exit"
 
-      log::info "[set]" "set kube-vip.yaml nic&vip to ${host}"
-      command::exec "${host}" "
-        sed -i \"s#ens33#${nic_name}#g\" /etc/kubernetes/manifests/kube-vip.yaml
-        sed -i \"s#192.168.200.10#${vip}#g\" /etc/kubernetes/manifests/kube-vip.yaml
-      "
-      check::exit_code "$?" "set" "${host}: set kube-vip.yaml nic&vip" "exit"
-    done
-  fi
+      # log::info "[set]" "set kube-vip.yaml nic&vip to ${host}"
+      # command::exec "${host}" "
+        # sed -i \"s#ens33#${nic_name}#g\" /etc/kubernetes/manifests/kube-vip.yaml
+        # sed -i \"s#192.168.200.10#${vip}#g\" /etc/kubernetes/manifests/kube-vip.yaml
+      # "
+      # check::exit_code "$?" "set" "${host}: set kube-vip.yaml nic&vip" "exit"
+    # done
+  # fi
 
   for host in $MASTER_NODES; do
     [[ "${MGMT_NODE}" == "$host" ]] && continue
@@ -1651,24 +1528,9 @@ function kubeadm::join() {
     log::info "[kubeadm join]" "master $host join cluster."
     command::exec "${host}" "
       mkdir -p /etc/kubernetes/
-      cat << EOF > /etc/kubernetes/kubeadm-config.yaml
----
-apiVersion: kubeadm.k8s.io/v1beta2
-kind: JoinConfiguration
-discovery:
-  bootstrapToken:
-    apiServerEndpoint: $KUBE_APISERVER:${KUBE_PORT}
-    caCertHashes:
-    - sha256:${CACRT_HASH:-}
-    token: ${INIT_TOKEN}
-  timeout: 5m0s
-controlPlane:
-  certificateKey: ${INTI_CERTKEY:-}
-${kubelet_nodeRegistration}
-EOF
       # 加入集群前，manifests目录必须为空
       mv /etc/kubernetes/manifests/kube-vip.yaml /tmp/kube-vip.yaml
-      kubeadm join --config /etc/kubernetes/kubeadm-config.yaml
+      ${INIT_TOKEN}
       mv /tmp/kube-vip.yaml /etc/kubernetes/manifests/kube-vip.yaml
     "
     check::exit_code "$?" "kubeadm join" "master $host join cluster"
@@ -1682,43 +1544,29 @@ EOF
 
     # 判断是否有VIP
     local KUBE_APISERVER_IP="${MGMT_NODE}"
-    [ "${vip}" != "0" ] && KUBE_APISERVER_IP=${vip}
+    #[ "${vip}" != "0" ] && KUBE_APISERVER_IP=${vip}
     command::exec "${host}" "
       sed -i 's#.*$KUBE_APISERVER#$KUBE_APISERVER_IP $KUBE_APISERVER#g' /etc/hosts
       # 给master去除污点并打上worker标签
-      kubectl taint nodes \$(hostname) node-role.kubernetes.io/master-
-      kubectl label node \$(hostname) node-role.kubernetes.io/worker= --overwrite
+      kubectl taint nodes $(hostname) node-role.kubernetes.io/control-plane:NoSchedule-
+      
     "
   done
 
   for host in $WORKER_NODES; do
     local KUBE_APISERVER_IP="${MGMT_NODE}"
-    [ "${vip}" != "0" ] && KUBE_APISERVER_IP=${vip}
+    #[ "${vip}" != "0" ] && KUBE_APISERVER_IP=${vip}
     log::info "[kubeadm join]" "worker $host join cluster."
     command::exec "${host}" "
       sed -i 's#.*$KUBE_APISERVER#$KUBE_APISERVER_IP $KUBE_APISERVER#g' /etc/hosts
-      mkdir -p /etc/kubernetes/manifests
-      cat << EOF > /etc/kubernetes/kubeadm-config.yaml
----
-apiVersion: kubeadm.k8s.io/v1beta2
-kind: JoinConfiguration
-discovery:
-  bootstrapToken:
-    apiServerEndpoint: $KUBE_APISERVER:${KUBE_PORT}
-    caCertHashes:
-    - sha256:${CACRT_HASH:-}
-    token: ${INIT_TOKEN}
-  timeout: 5m0s
-${kubelet_nodeRegistration}
-EOF
-      kubeadm join --config /etc/kubernetes/kubeadm-config.yaml
+      ${INIT_TOKEN}
     "
     check::exit_code "$?" "kubeadm join" "worker $host join cluster"
 
     log::info "[kubeadm join]" "set $host worker node role."
     command::exec "${MGMT_NODE}" "
       # node节点打标签
-      kubectl get node --selector='!node-role.kubernetes.io/master' | grep '<none>' | awk '{print \"kubectl label node \" \$1 \" node-role.kubernetes.io/worker= --overwrite\" }' | bash
+      kubectl get node --selector='!node-role.kubernetes.io/control-plane' | grep '<none>' | awk '{print \"kubectl label node \" \$1 \" node-role.kubernetes.io/worker= --overwrite\" }' | bash
     "
     check::exit_code "$?" "kubeadm join" "set $host worker node role"
   done
@@ -1781,17 +1629,17 @@ function kube::status() {
      echo ''
   " && printf "%s \n" "${COMMAND_OUTPUT}"
 
-  curl 'https://oapi.dingtalk.com/robot/send?access_token=140115392d858fd1c456e943373adbf9f4f77c1c751ee171f711cd4ca8b681e2' \
-    -H 'Content-Type: application/json' \
-    -d '
-  {"msgtype": "text",
-    "text": {
-        "content": "'"kubeeasy install info: ${COMMAND_OUTPUT}"'"
-     },
-    "at": {
-	    "isAtAll": true
-	  }
-  }' &>/dev/null || true
+  # curl 'https://oapi.dingtalk.com/robot/send?access_token=140115392d858fd1c456e943373adbf9f4f77c1c751ee171f711cd4ca8b681e2' \
+    # -H 'Content-Type: application/json' \
+    # -d '
+  # {"msgtype": "text",
+    # "text": {
+        # "content": "'"kubeeasy install info: ${COMMAND_OUTPUT}"'"
+     # },
+    # "at": {
+	    # "isAtAll": true
+	  # }
+  # }' &>/dev/null || true
 
 }
 
@@ -1838,42 +1686,44 @@ function add::network() {
     log::info "[network]" "add flannel"
 
     local flannel_file="${OFFLINE_DIR}/manifests/kube-flannel.yml"
-    utils::download_file "https://cdn.jsdelivr.net/gh/coreos/flannel@v${FLANNEL_VERSION}/Documentation/kube-flannel.yml" "${flannel_file}"
+    #utils::download_file "https://cdn.jsdelivr.net/gh/coreos/flannel@v${FLANNEL_VERSION}/Documentation/kube-flannel.yml" "${flannel_file}"
 
     command::exec "${MGMT_NODE}" "
       sed -i 's#10.244.0.0/16#$KUBE_POD_SUBNET#g' \"${flannel_file}\"
-      sed -i 's#\"Type\": \"vxlan\"#\"Type\": \"${KUBE_FLANNEL_TYPE}\"#g' \"${flannel_file}\"
-      if [[ \"${KUBE_FLANNEL_TYPE}\" == \"vxlan\" ]]; then
-        sed -i 's#\"Type\": \"vxlan\"#\"Type\": \"vxlan\", \"DirectRouting\": true#g' \"${flannel_file}\"
-      fi
+      #sed -i 's#\"Type\": \"vxlan\"#\"Type\": \"${KUBE_FLANNEL_TYPE}\"#g' \"${flannel_file}\"
+      #if [[ \"${KUBE_FLANNEL_TYPE}\" == \"vxlan\" ]]; then
+      #  sed -i 's#\"Type\": \"vxlan\"#\"Type\": \"vxlan\", \"DirectRouting\": true#g' \"${flannel_file}\"
+      #fi
     "
     check::exit_code "$?" "flannel" "change flannel pod subnet"
     kube::apply "${flannel_file}"
     kube::wait "flannel" "kube-system" "pods" "app=flannel"
+    #local coredn_file="/tmp/kubernetes/manifests/coredns-cm.yaml"
+    #kube::apply "${coredn_file}"
 
   elif [[ "$KUBE_NETWORK" == "calico" ]]; then
     if [ "${OFFLINE_TAG}" == "1" ]; then
       log::info "[network]" "add calico network"
       local calico_file="${OFFLINE_DIR}/manifests/calico.yaml"
-      command::exec "${MGMT_NODE}" "
-        sed -i 's#10.244.0.0/16#$KUBE_POD_SUBNET#g' \"${calico_file}\"
-      "
+      #command::exec "${MGMT_NODE}" "
+      #  sed -i 's#10.244.0.0/16#$KUBE_POD_SUBNET#g' \"${calico_file}\"
+      #"
       check::exit_code "$?" "calico" "change calico pod subnet"
       kube::apply "${OFFLINE_DIR}/manifests/calico.yaml"
       kube::wait "calico-kube-controllers" "kube-system" "pods" "k8s-app=calico-kube-controllers"
       kube::wait "calico-node" "kube-system" "pods" "k8s-app=calico-node"
-    else
-      # 没有指定离线包就在线安装
-      local calico_file="${TMP_DIR}/kubeeasy/manifests/calico.yaml"
-      utils::download_file "${GITHUB_PROXY}https://raw.githubusercontent.com/kongyu666/kubeeasy/main/manifests/calico.yaml" "${calico_file}"
-      log::info "[network]" "add calico network"
-      command::exec "${MGMT_NODE}" "
-        sed -i 's#10.244.0.0/16#$KUBE_POD_SUBNET#g' \"${calico_file}\"
-      "
-      check::exit_code "$?" "calico" "change calico pod subnet"
-      kube::apply "${calico_file}"
-      kube::wait "calico-kube-controllers" "kube-system" "pods" "k8s-app=calico-kube-controllers"
-      kube::wait "calico-node" "kube-system" "pods" "k8s-app=calico-node"
+    # else
+      # # 没有指定离线包就在线安装
+      # local calico_file="${TMP_DIR}/kubeeasy/manifests/calico.yaml"
+      # utils::download_file "${GITHUB_PROXY}https://raw.githubusercontent.com/kongyu666/kubeeasy/main/manifests/calico.yaml" "${calico_file}"
+      # log::info "[network]" "add calico network"
+      # command::exec "${MGMT_NODE}" "
+        # sed -i 's#10.244.0.0/16#$KUBE_POD_SUBNET#g' \"${calico_file}\"
+      # "
+      # check::exit_code "$?" "calico" "change calico pod subnet"
+      # kube::apply "${calico_file}"
+      # kube::wait "calico-kube-controllers" "kube-system" "pods" "k8s-app=calico-kube-controllers"
+      # kube::wait "calico-node" "kube-system" "pods" "k8s-app=calico-node"
     fi
   else
     log::warning "[network]" "No $KUBE_NETWORK config."
@@ -1882,15 +1732,29 @@ function add::network() {
 
 function add::storage() {
   # 添加存储
-  local STORAGE_YAML_DIR="${TMP_DIR}/k8s-storage/deploy/"
-  local NFS_YAML="${OFFLINE_DIR}/manifests/nfs-provisioner.yaml"
-  local LOCAL_YAML="${OFFLINE_DIR}/manifests/localpv-provisioner.yaml"
-  local LONGHORN_YAML="${TMP_DIR}/k8s-storage/deploy/longhorn/longhorn.yaml"
-  local OPENEBS_YAML="${TMP_DIR}/k8s-storage/deploy/openebs/openebs-operator.yaml"
-
-  if [[ "$KUBE_STORAGE" == "local" ]]; then
+  #local STORAGE_YAML_DIR="${TMP_DIR}/k8s-storage/deploy/"
+  local NFS_YAML="${OFFLINE_DIR}/manifests/nfs-storage.yaml"
+  #local LOCAL_YAML="${OFFLINE_DIR}/manifests/localpv-provisioner.yaml"
+  #local LONGHORN_YAML="${TMP_DIR}/k8s-storage/deploy/longhorn/longhorn.yaml"
+  #local OPENEBS_YAML="${TMP_DIR}/k8s-storage/deploy/openebs/openebs-operator.yaml"
+  if [[ "$KUBE_STORAGE" == "nfs" ]]; then
     # 添加nfs和openebs local存储类
     log::info "[storage]" "add local storage class"
+    command::exec "${MGMT_NODE}" "
+      mkdir -p /data/nfs
+	  chmod 777 /data/nfs -R 
+	  cat << EOF >/etc/exports
+/data/nfs  *(rw,sync,no_root_squash)
+EOF
+    systemctl restart nfs-server rpcbind
+    systemctl enable nfs-server rpcbind
+    "
+    kube::apply "${NFS_YAML}"
+    kube::wait "nfs-client-provisioner" "kube-system" "pods" "app=nfs-client-provisioner"
+  elif [[ "$KUBE_STORAGE" == "local" ]]; then
+    # 添加nfs和openebs local存储类
+    log::info "[storage]" "add local storage class"
+
     kube::apply "${LOCAL_YAML}"
     kube::wait "localpv-provisioner" "kube-system" "pods" "app=localpv-provisioner"
 
@@ -1935,87 +1799,128 @@ function add::ui() {
   # 添加用户界面
   local OFFLINE_TAG=${OFFLINE_TAG}
   local TMP_DIR=${TMP_DIR}
-
+  local OFFLINE_DIR=${OFFLINE_DIR}
   if [[ "$KUBE_UI" == "kuboard" ]]; then
     log::info "[ui]" "add kuboard"
-    local kuboard_file="${TMP_DIR}/kubeeasy/manifests/kuboard-v2.yaml"
-    local metrics_file="${TMP_DIR}/kubeeasy/manifests/metrics-server.yaml"
-    [[ -f "${kuboard_file}" ]] || utils::download_file "${GITHUB_PROXY}https://raw.githubusercontent.com/kongyu666/kubeeasy/main/manifests/kuboard-v2.yaml" "${kuboard_file}"
-    [[ -f "${metrics_file}" ]] || utils::download_file "${GITHUB_PROXY}https://raw.githubusercontent.com/kongyu666/kubeeasy/main/manifests/metrics-server.yaml" "${metrics_file}"
-    kube::apply "${OFFLINE_DIR}/manifests/kuboard-v2.yaml"
-    kube::apply "${OFFLINE_DIR}/manifests/metrics-server.yaml"
-    kube::wait "kuboard" "kube-system" "pods" "k8s.kuboard.cn/name=kuboard"
-    kube::wait "metrics-server" "kube-system" "pods" "k8s-app=metrics-server"
-    local dashboard_token=""
-    command::exec "${MGMT_NODE}" "
-      kubectl -n kube-system get secret \$(kubectl -n kube-system get secret | grep kuboard-user | awk '{print \$1}') -o go-template='{{.data.token}}' | base64 -d | tee -a ~/k8s-token.txt
-    "
-    get::command_output "dashboard_token" "$?"
-    local node_ip=${MGMT_NODE}
-    [ -n "${VIRTUAL_IP}" ] && node_ip=${VIRTUAL_IP}
-    log::access "[kuboard]" "http://${node_ip}:32567"
-    log::access "[Token]" "${dashboard_token}"
-  elif [[ "$KUBE_UI" == "kubesphere" ]]; then
-    log::info "[ui]" "add kubesphere"
-    local cluster_configuration="${TMP_DIR}/kubesphere/deploy/cluster-configuration.yaml"
-    local kubesphere_installer="${TMP_DIR}/kubesphere/deploy/kubesphere-installer.yaml"
-    [[ -f "${cluster_configuration}" ]] || utils::download_file "${GITHUB_PROXY}https://raw.githubusercontent.com/kongyu666/kubeeasy/main/kubesphere/deploy/cluster-configuration.yaml" "${cluster_configuration}"
-    [[ -f "${kubesphere_installer}" ]] || utils::download_file "${GITHUB_PROXY}https://raw.githubusercontent.com/kongyu666/kubeeasy/main/kubesphere/deploy/kubesphere-installer.yaml" "${kubesphere_installer}"
-    kube::apply "${TMP_DIR}/kubesphere/deploy/kubesphere-installer.yaml"
-    kube::apply "${TMP_DIR}/kubesphere/deploy/cluster-configuration.yaml"
-    sleep 60
-    kube::wait "ks-installer" "kubesphere-system" "pods" "app=ks-install"
-    kube::wait "kubesphere-system" "kubesphere-system" "pods --all"
-    kube::wait "kubesphere-controls-system" "kubesphere-controls-system" "pods --all"
-    kube::wait "kubesphere-monitoring-system" "kubesphere-monitoring-system" "pods --all"
-    if [[ "$?" == "0" ]]; then
-      command::exec "${MGMT_NODE}" "
-        kubectl get node --selector='node-role.kubernetes.io/master' -o jsonpath='{range.items[*]}{.status.addresses[?(@.type==\"InternalIP\")].address } {end}' | awk '{print \$1}'
-      "
-      get::command_output "node_ip" "$?"
-      log::access "[kubesphere]" "Console: http://${node_ip:-NodeIP}:30880;  Account: admin; Password: P@88w0rd"
-    fi
+    local kuboard_file="${OFFLINE_DIR}/manifests/recommended.yaml"
+    local kuboardadmin_file="${OFFLINE_DIR}/manifests/dashboard-adminuser.yaml"
+	local components_file="${OFFLINE_DIR}/manifests/components.yaml"
+    #[[ -f "${kuboard_file}" ]] || utils::download_file "${GITHUB_PROXY}https://raw.githubusercontent.com/kongyu666/kubeeasy/main/manifests/kuboard-v2.yaml" "${kuboard_file}"
+    #[[ -f "${metrics_file}" ]] || utils::download_file "${GITHUB_PROXY}https://raw.githubusercontent.com/kongyu666/kubeeasy/main/manifests/metrics-server.yaml" "${metrics_file}"
+	kube::apply "${kuboard_file}"
+    kube::wait "kubernetes-dashbaord" "kube-system" "pods" "k8s-app=kubernetes-dashboard"
+	kube::apply "${kuboardadmin_file}"
+	kube::apply "${components_file}"
+	kube::wait "metrics-server" "kube-system" "pods" "k8s-app=metrics-server"
+    
+    #local dashboard_token=""
+    #command::exec "${MGMT_NODE}" "
+    #  kubectl -n kube-system get secret \$(kubectl -n kube-system get secret | grep kuboard-user | awk '{print \$1}') -o go-template='{{.data.token}}' | base64 -d | tee -a ~/k8s-token.txt
+    #"
+    #get::command_output "dashboard_token" "$?"
+    #local node_ip=${MGMT_NODE}
+    #[ -n "${VIRTUAL_IP}" ] && node_ip=${VIRTUAL_IP}
+    #log::access "[kuboard]" "http://${node_ip}:32567"
+    #log::access "[Token]" "${dashboard_token}"
   else
     log::warning "[ui]" "No $KUBE_UI config."
   fi
 }
+function add::harbor(){
+  local TMP_DIR="/tmp"
+  local MGMT_NODE=${MGMT_NODE}
+  #local LOCAL_HOST=$(cat /etc/hosts |grep master | awk '{print $1}')
+  if [[ "$KUBE_HARBOR" == "harbor" ]]; then
+    log::info "[harbor]" "add harbor"
+	command::exec "${MGMT_NODE}" "
+	  kubectl create ns harbor
+	  sed -i 's#127.0.0.1:80#$MGMT_NODE:80#g' /tmp/kubezcloud/harbor/values.yaml
+	  helm install harbor -n harbor /tmp/kubezcloud/harbor/
+    "
+	kube::wait "harbor-nginx" "harbor" "pods" "component=nginx"
+	kube::wait "harbor-core" "harbor" "pods" "component=core"
+	kube::wait "harbor-jobservice" "harbor" "pods" "component=jobservice"
+	kube::wait "notary-signer" "harbor" "pods" "component=notary-signer"
+    #log::access
+  # elif [[ "$KUBE_VIRT" == "kata" ]]; then
+    # echo "none."
+  else
+    log::warning "[ui]" "No $KUBE_UI config."
+  fi
+}
+function add::istio(){
+  local TMP_DIR=${TMP_DIR}
+  local OFFLINE_DIR=${OFFLINE_DIR}
+  if [[ "$KUBE_ISTIO" == "istio" ]]; then
+    local GRAFANA_FILE="${OFFLINE_DIR}/manifests/grafana.yaml"
+	local JAEGER_FILE="${OFFLINE_DIR}/manifests/jaeger.yaml"
+	local KIALI_FILE="${OFFLINE_DIR}/manifests/kiali.yaml"
+	local PROMETHEUS_FILE="${OFFLINE_DIR}/manifests/prometheus.yaml"
+    log::info "[istio]" "add istio"
+	command::exec "${MGMT_NODE}" "
+	  istioctl install -y --set profile=demo
+	"
+	kube::wait "istiod" "istio-system" "pods" "app=istiod"
+	kube::wait "istio-egressgateway" "istio-system" "pods" "app=istio-egressgateway"
+	kube::wait "istio-ingressgateway" "istio-system" "pods" "app=istio-ingressgateway"
+	
+	kube::apply "${GRAFANA_FILE}"
+	kube::apply "${JAEGER_FILE}"
+	kube::apply "${KIALI_FILE}"
+	kube::apply "${PROMETHEUS_FILE}"
+	kube::wait "grafana" "istio-system" "pods" "app.kubernetes.io/instance=grafana"
+	kube::wait "jaeger" "istio-system" "pods" "app=jaeger"
+	kube::wait "kiali" "istio-system" "pods" "app.kubernetes.io/instance=kiali"
+	kube::wait "prometheus" "istio-system" "pods" "app=prometheus"
+	#log::access
 
+  else
+    log::warning "[ui]" "No $KUBE_UI config."
+  fi
+
+}
 function add::virt() {
   # 添加kubevirt
   local TMP_DIR=${TMP_DIR}
+  local OFFLINE_DIR=${OFFLINE_DIR}
 
   if [[ "$KUBE_VIRT" == "kubevirt" ]]; then
+    # log::info "[offline]" "unzip offline kubvirt package on local."
+	# command::exec "${MGMT_NODE}" "
+      # [[ ! -d "/tmp/kubevirt" ]] && tar -zxf "/opt/kubevirt.tar.gz" -C ${TMP_DIR} || true
+	  # [[ -d "/tmp/kubevirt" ]] && cp -rvf /tmp/kubevirt/tools/virtctl-v0.47.1-linux-amd64 /usr/local/bin/ || true
+	# "
+    # check::exit_code "$?" "offline" "unzip offline kubvirt package"
     log::info "[virt]" "add kubevirt"
-    local kubevirt_operator="${TMP_DIR}/kubevirt/deploy/kubevirt-operator.yaml"
-    local kubevirt_cr="${TMP_DIR}/kubevirt/deploy/kubevirt-cr.yaml"
-    local multus_daemonset="${TMP_DIR}/kubevirt/deploy/multus-daemonset.yml"
-    local multus_cni_macvlan="${TMP_DIR}/kubevirt/deploy/multus-cni-macvlan.yaml"
-    [[ -f "${kubevirt_operator}" ]] || utils::download_file "${GITHUB_PROXY}https://raw.githubusercontent.com/kongyu666/kubeeasy/main/kubevirt/deploy/kubevirt-operator.yaml" "${kubevirt_operator}"
-    [[ -f "${kubevirt_cr}" ]] || utils::download_file "${GITHUB_PROXY}https://raw.githubusercontent.com/kongyu666/kubeeasy/main/kubevirt/deploy/kubevirt-cr.yaml" "${kubevirt_cr}"
-    [[ -f "${multus_daemonset}" ]] || utils::download_file "${GITHUB_PROXY}https://raw.githubusercontent.com/kongyu666/kubeeasy/main/kubevirt/deploy/multus-daemonset.yml" "${multus_daemonset}"
-    [[ -f "${multus_cni_macvlan}" ]] || utils::download_file "${GITHUB_PROXY}https://raw.githubusercontent.com/kongyu666/kubeeasy/main/kubevirt/deploy/multus-cni-macvlan.yaml" "${multus_cni_macvlan}"
+    local kubevirt_operator="${OFFLINE_DIR}/manifests/kubevirt-operator.yaml"
+    local kubevirt_cr="${OFFLINE_DIR}/manifests/kubevirt-cr.yaml"
+    #local multus_daemonset="${OFFLINE_DIR}/manifests/multus-daemonset.yaml"
+    #local multus_cni_macvlan="${OFFLINE_DIR}/manifests/multus-cni-macvlan.yaml"
+    #[[ -f "${kubevirt_operator}" ]] || utils::download_file "${GITHUB_PROXY}https://raw.githubusercontent.com/kongyu666/kubeeasy/main/kubevirt/deploy/kubevirt-operator.yaml" "${kubevirt_operator}"
+    #[[ -f "${kubevirt_cr}" ]] || utils::download_file "${GITHUB_PROXY}https://raw.githubusercontent.com/kongyu666/kubeeasy/main/kubevirt/deploy/kubevirt-cr.yaml" "${kubevirt_cr}"
+    #[[ -f "${multus_daemonset}" ]] || utils::download_file "${GITHUB_PROXY}https://raw.githubusercontent.com/kongyu666/kubeeasy/main/kubevirt/deploy/multus-daemonset.yml" "${multus_daemonset}"
+    #[[ -f "${multus_cni_macvlan}" ]] || utils::download_file "${GITHUB_PROXY}https://raw.githubusercontent.com/kongyu666/kubeeasy/main/kubevirt/deploy/multus-cni-macvlan.yaml" "${multus_cni_macvlan}"
 
     kube::apply "${kubevirt_operator}"
     kube::wait "kubevirt" "kubevirt" "pods" "kubevirt.io=virt-operator"
     kube::apply "${kubevirt_cr}"
-    sleep 30
+    sleep 10
     kube::wait "kubevirt" "kubevirt" "pods" "kubevirt.io=virt-api"
     kube::wait "kubevirt" "kubevirt" "pods" "kubevirt.io=virt-controller"
     kube::wait "kubevirt" "kubevirt" "pods" "kubevirt.io=virt-handler"
-
-    kube::apply "${multus_daemonset}"
-    kube::wait "kube-multus" "kube-system" "pods" "app=multus"
-    kube::apply "${multus_cni_macvlan}"
-
-    log::info "[cluster]" "kubernetes kubevirt status"
-    command::exec "${MGMT_NODE}" "
-       echo '+ kubectl get pod -n kubevirt -o wide'
-       kubectl get pod -n kubevirt -o wide
-       echo ''
-    " && printf "%s \n" "${COMMAND_OUTPUT}"
-
-  elif [[ "$KUBE_VIRT" == "kata" ]]; then
-    echo "none."
+    # kube::apply "${multus_daemonset}"
+    # kube::wait "kube-multus" "kube-system" "pods" "app=multus"
+    # kube::apply "${multus_cni_macvlan}"
+    # log::info "[cluster]" "kubernetes kubevirt status"
+    # command::exec "${MGMT_NODE}" "
+       # echo '+ kubectl get pod -n kubevirt -o wide'
+       # kubectl get pod -n kubevirt -o wide
+       # echo ''
+    # " && printf "%s \n" "${COMMAND_OUTPUT}"
+	
+  # elif [[ "$KUBE_VIRT" == "kata" ]]; then
+    # echo "none."
+	#log::access
   else
     log::warning "[ui]" "No $KUBE_UI config."
   fi
@@ -2030,13 +1935,16 @@ function reset::node() {
     set +ex
     kubeadm reset -f
     [ -f \"\$(which kubelet)\" ] && { systemctl stop kubelet; find /var/lib/kubelet | xargs -n 1 findmnt -n -o TARGET -T | sort | uniq | xargs -r umount -v; rm -rf /usr/local/bin/{kubeadm,kubelet,kubectl,helm}; }
-    [ -d /etc/kubernetes ] && rm -rf /etc/kubernetes/* /var/lib/kubelet/* /var/lib/etcd/* \$HOME/.kube /etc/cni/net.d/* /var/lib/dockershim/* /var/lib/cni/* /var/run/kubernetes/*
-    docker_data_dir=\$(cat /etc/docker/daemon.json | grep data-root | awk -F '\"' '{print \$4}')
-    [ -f \"\$(which docker)\" ] && { docker rm -f -v \$(docker ps | grep kube | awk '{print \$1}'); systemctl stop docker; rm -rf \$HOME/.docker /etc/docker/* /var/lib/docker/* \${docker_data_dir} /usr/bin/{containerd,containerd-shim,containerd-shim-runc-v2,ctr,docker,docker-compose,dockerd,docker-init,docker-proxy,runc};}
-    [ -f \"\$(which containerd)\" ] && { crictl rm \$(crictl ps -a -q); systemctl stop containerd; rm -rf /etc/containerd/* /var/lib/containerd/*; }
+    [ -d /etc/kubernetes ] && rm -rf /etc/kubernetes/* /var/lib/kubelet/* /var/lib/etcd/* \$HOME/.kube /etc/cni/net.d/*  /var/lib/cni/*/var/lib/dockershim/*  /var/run/kubernetes/*
+    # rm -rf  /etc/cni/net.d/* /var/lib/cni/*
+	#docker_data_dir=\$(cat /etc/docker/daemon.json | grep data-root | awk -F '\"' '{print \$4}')
+    #[ -f \"\$(which docker)\" ] && { docker rm -f -v \$(docker ps | grep kube | awk '{print \$1}'); systemctl stop docker; rm -rf \$HOME/.docker /etc/docker/* /var/lib/docker/* \${docker_data_dir} /usr/bin/{containerd,containerd-shim,containerd-shim-runc-v2,ctr,docker,docker-compose,dockerd,docker-init,docker-proxy,runc};}
+    #[ -f \"\$(which containerd)\" ] && { crictl rm \$(crictl ps -a -q); systemctl stop containerd; rm -rf /etc/containerd/* /var/lib/containerd/*; }
     hostnamectl set-hostname localhost
-    systemctl disable kubelet docker containerd && rm -rf /etc/systemd/system/{docker.service,containerd.service} /etc/systemd/system/kubelet.service*
-    rm -rf /opt/cni /data/registry /opt/containerd/ /root/.kubeeasy ${TMP_DIR}/kubeeasy /root/k8s-token.txt
+    systemctl disable kubelet docker containerd 
+	# && rm -rf /etc/systemd/system/{docker.service,containerd.service} /etc/systemd/system/kubelet.service*
+    #rm -rf /opt/cni /data/registry /opt/containerd/ /root/.kubeeasy ${TMP_DIR}/kubeeasy 
+	rm -rf /opt/cni opt/containerd/ 
     sed -i -e \"/${KUBE_APISERVER}/d\" -e '/worker/d' -e '/master/d' -e "/^$/d"  -e '/dockerhub.kubeeasy.local/d' /etc/hosts
     rm -rf /etc/profile.d/ssh-login-info.sh
     sed -i '/## kubeeasy managed start/,/## kubeeasy managed end/d' /etc/hosts /etc/security/limits.conf /etc/systemd/system.conf /etc/bashrc /etc/rc.local /etc/audit/rules.d/audit.rules
@@ -2047,6 +1955,8 @@ function reset::node() {
       [ -d /sys/class/net/\${int} ] && ip link delete \${int}
     done
     modprobe -r ipip
+	[ -e /etc/cni/net.d/ ] && dnf -y remove kubernetes-cni &&  dnf install -y  /tmp/packages/*kube*.rpm
+	rm -rf /data/nfs
     echo done.
   "
   check::exit_code "$?" "reset" "$host: reset"
@@ -2086,11 +1996,11 @@ function reset::cluster() {
     reset::node "$host"
   done
 
-  # 重置完后重启主机
-  for host in $all_node; do
-    command::exec "${host}" "bash -c 'sleep 15 && reboot' &>/dev/null &"
-    check::exit_code "$?" "reboot" "$host: wait for 15s to restart"
-  done
+  # # 重置完后重启主机
+  # for host in $all_node; do
+    # command::exec "${host}" "bash -c 'sleep 15 && reboot' &>/dev/null &"
+    # check::exit_code "$?" "reboot" "$host: wait for 15s to restart"
+  # done
 
 }
 
@@ -2129,11 +2039,11 @@ function reset::cluster_force() {
   for host in $all_node; do
     reset::node "$host"
   done
-
-  for host in $all_node; do
-    command::exec "${host}" "bash -c 'sleep 15 && reboot' &>/dev/null &"
-    check::exit_code "$?" "reboot" "$host: wait for 15s to restart"
-  done
+  log::access
+  # for host in $all_node; do
+    # command::exec "${host}" "bash -c 'sleep 15 && reboot' &>/dev/null &"
+    # check::exit_code "$?" "reboot" "$host: wait for 15s to restart"
+  # done
 
 }
 
@@ -2143,7 +2053,7 @@ function offline::load() {
   local role="${1:-}"
   local hosts=""
   local UPGRADE_KERNEL_TAG="${UPGRADE_KERNEL_TAG:-0}"
-  local OFFLINE_DIR="${TMP_DIR}/kubeeasy"
+  local OFFLINE_DIR="${TMP_DIR}/kubezcloud"
 
   if [[ "${role}" == "master" ]]; then
     hosts="${MASTER_NODES}"
@@ -2177,7 +2087,7 @@ function offline::cluster() {
   }
 
   log::info "[offline]" "unzip offline package on local."
-  [[ ! -d "${TMP_DIR}/kubeeasy" ]] && tar -zxf "${OFFLINE_FILE}" -C "${TMP_DIR}/" || true
+  [[ ! -d "${TMP_DIR}/kubezcloud" ]] && tar -zxf "${OFFLINE_FILE}" -C "${TMP_DIR}/" || true
   check::exit_code "$?" "offline" "unzip offline package"
 
   offline::load "master"
@@ -2189,7 +2099,7 @@ function offline::load_depend() {
 
   local hosts="${HOST}"
   local RPMS_DIR=""
-  RPMS_DIR="/tmp/centos-7-rpms"
+  RPMS_DIR="/tmp/packages"
 
   for host in ${hosts}; do
     # 优化ssh
@@ -2206,40 +2116,33 @@ function offline::load_depend() {
     check::exit_code "$?" "offline" "load offline dependencies file to $host" "exit"
 
     # 安装依赖包
-    log::info "[install]" "${host}: install dependencies packages in nohup"
+    log::info "[install]" "${host}: install dependencies packages  "
     command::exec "${host}" "
       rm -rf /etc/yum.repos.d/*
       rpms=\$(ls ${RPMS_DIR} | grep -v repodata)
       mkdir -p /tmp/pid_temp/
       index=1
-      for rpm in \${rpms}
-      do
-        nohup yum localinstall -y --skip-broken ${RPMS_DIR}/\${rpm}/*.rpm &> /dev/null &
-        echo \$! > /tmp/pid_temp/temp\${index}.pid
-        ((index++))
-      done
-    "
-    check::exit_code "$?" "install" "${host}: install dependencies packages in nohup" "exit"
-  done
 
+      
+      dnf install -y  ${RPMS_DIR}/*.rpm
+      echo \$! > /tmp/pid_temp/temp\${index}.pid
+      ((index++))
+      
+    "
+    check::exit_code "$?" "install" "${host}: install dependencies packages " "exit"
+	
+  done
+    ## 清除临时文件
+  for host in ${hosts}; do
+    command::exec "${host}" "
+      rm -rf /tmp/pid_temp
+    "
+  done
+  
+  log::access
+  
   ## 等待后台任务执行完毕
-  for host in ${hosts}; do
-    log::info "[waiting]" "waiting dependencies job $host"
-    command::exec "${host}" "
-      for pidfile in \$(ls /tmp/pid_temp/*.pid)
-      do
-        tail --pid=\$(cat \$pidfile) -f /dev/null
-      done
-    "
-    check::exit_code "$?" "waiting" "waiting dependencies job $host"
-  done
 
-  ## 清除临时文件
-  for host in ${hosts}; do
-    command::exec "${host}" "
-      rm -rf ${RPMS_DIR} /tmp/pid_temp
-    "
-  done
 }
 
 function offline::cluster_depend() {
@@ -2251,17 +2154,18 @@ function offline::cluster_depend() {
   }
 
   log::info "[offline]" "unzip offline dependencies package on local."
-  [[ ! -d "/tmp/centos-7-rpms" ]] && tar -zxf "${OFFLINE_FILE}" -C /tmp || true
+  [[ ! -d "/tmp/base-rpms" ]] && tar -zxf "${OFFLINE_FILE}" -C /tmp || true
   check::exit_code "$?" "offline" "unzip offline dependencies package"
 
   log::info "[install]" "install sshpass packages on local."
   rm -rf /etc/yum.repos.d/*
-  [[ ! -f "/usr/bin/sshpass" ]] && yum localinstall -y --skip-broken /tmp/centos-7-rpms/system-base/sshpass-*.rpm &>$LOG_FILE || true
+  [[ ! -f "/usr/bin/sshpass" ]] && dnf install -y  /tmp/packages/sshpass-*.rpm &>$LOG_FILE || true
   check::exit_code "$?" "install" "install sshpass packages"
 
   offline::load_depend
+  
+  
 
-  [[ -d "/tmp/centos-7-rpms" ]] && rm -rf /tmp/centos-7-rpms
 }
 
 function offline::load_kernel() {
@@ -2291,7 +2195,7 @@ function offline::load_kernel() {
       rm -rf /etc/yum.repos.d/*
       mkdir -p /tmp/pid_temp/
       index=1
-      nohup yum localinstall -y --skip-broken ${RPMS_DIR}/*.rpm &> /dev/null &
+      nohup dnf install -y --skip-broken ${RPMS_DIR}/*.rpm &> /dev/null &
       echo \$! > /tmp/pid_temp/temp\${index}.pid
     "
     check::exit_code "$?" "install" "${host}: install kernel packages in nohup" "exit"
@@ -2405,16 +2309,21 @@ function init::cluster() {
   install::package
   # 3. 初始化kubeadm
   kubeadm::init
-  # 4. 加入集群
-  kubeadm::join
-  # 5. 添加network
+  # 4. 添加network
   add::network
+  # 5. 加入集群
+  kubeadm::join
   # 6. 添加web ui
   add::ui
   # 7. 添加storage
   add::storage
   # 8. 查看集群状态
+  add::virt
+  add::istio
+  add::harbor
   kube::status
+  log::access
+  
 }
 
 function add::node() {
@@ -2426,7 +2335,7 @@ function add::node() {
   # KUBE_VERSION未指定时，获取集群的版本
   if [[ "${KUBE_VERSION}" == "" || "${KUBE_VERSION}" == "latest" ]]; then
     command::exec "${MGMT_NODE}" "
-      kubectl get node --selector='node-role.kubernetes.io/master' -o jsonpath='{range.items[*]}{.status.nodeInfo.kubeletVersion } {end}' | awk -F'v| ' '{print \$2}'
+      kubectl get node --selector='node-role.kubernetes.io/control-plane' -o jsonpath='{range.items[*]}{.status.nodeInfo.kubeletVersion } {end}' | awk -F'v| ' '{print $2}'
   "
     get::command_output "KUBE_VERSION" "$?" "exit"
   fi
@@ -2805,38 +2714,38 @@ function transform::data() {
     exit 1
   fi
 
-  [[ "$KUBE_CRI" != "docker" && "${OFFLINE_TAG:-}" == "1" ]] && {
-    log::error "[limit]" "$KUBE_CRI is not supported offline, only docker"
+  [[ "$KUBE_CRI" != "containerd" && "${OFFLINE_TAG:-}" == "1" ]] && {
+    log::error "[limit]" "$KUBE_CRI is not supported offline, only containerd"
     exit 1
   }
-  [[ "$KUBE_CRI" == "containerd" && "${KUBE_CRI_ENDPOINT}" == "/var/run/dockershim.sock" ]] && KUBE_CRI_ENDPOINT="unix:///run/containerd/containerd.sock"
-  [[ "$KUBE_CRI" == "cri-o" && "${KUBE_CRI_ENDPOINT}" == "/var/run/dockershim.sock" ]] && KUBE_CRI_ENDPOINT="unix:///var/run/crio/crio.sock"
+  #[[ "$KUBE_CRI" == "containerd" && "${KUBE_CRI_ENDPOINT}" == "/var/run/dockershim.sock" ]] && KUBE_CRI_ENDPOINT="unix:///run/containerd/containerd.sock"
+  #[[ "$KUBE_CRI" == "cri-o" && "${KUBE_CRI_ENDPOINT}" == "/var/run/dockershim.sock" ]] && KUBE_CRI_ENDPOINT="unix:///var/run/crio/crio.sock"
 
-  kubelet_nodeRegistration="nodeRegistration:
-  criSocket: ${KUBE_CRI_ENDPOINT:-/var/run/dockershim.sock}
-  kubeletExtraArgs:
-    runtime-cgroups: /system.slice/${KUBE_CRI//-/}.service
-$(if [[ "${KUBE_VERSION}" == "latest" || "${KUBE_VERSION}" == *"1.21"* ]]; then
-    echo "    pod-infra-container-image: $KUBE_IMAGE_REPO/pause:3.4.1"
-  else
-    echo "    pod-infra-container-image: $KUBE_IMAGE_REPO/pause:3.2"
-  fi)
-"
+  #kubelet_nodeRegistration="nodeRegistration:
+  #criSocket: ${KUBE_CRI_ENDPOINT:-/var/run/dockershim.sock}
+  #kubeletExtraArgs:
+  #  runtime-cgroups: /system.slice/${KUBE_CRI//-/}.service
+#$(if [[ "${KUBE_VERSION}" == "latest" || "${KUBE_VERSION}" == *"1.25.2"* ]]; then
+#    echo "    pod-infra-container-image: $KUBE_IMAGE_REPO/pause:3.6"
+#  else
+#    echo "    pod-infra-container-image: $KUBE_IMAGE_REPO/pause:3.6"
+#  fi)
+#"
 }
 
 function help::usage() {
   # 使用帮助
-
+# Script Name    : kubeeasy
+# Version:       : v1.3.2
   cat <<EOF
 
-Script Name    : kubeeasy
-Version:       : v1.3.2
-Description    : Install kubernetes (HA) cluster using kubeadm.
-Create Date    : 2022-06-01
-Author         : KongYu
-Email          : 2385569970@qq.com
+
+Description    : Install kubernetes cluster using kubeadm.
+Create Date    : 2023-06-06
+Author         : GUOChen
+Email          : 2492246121@qq.com
 Install kubernetes cluster using kubeadm.
-Documentation: https://github.com/kongyu666/kubeeasy
+Documentation: https://github.com/zcloud/kubezcloud
 
 Usage:
   $(basename "$0") [command]
@@ -2849,34 +2758,36 @@ Flags:
 
 Example:
   [install k8s cluster]
-  $0 install k8s \\
+  kubezcloud install k8s \\
   --master 192.168.1.201 \\
   --worker 192.168.1.202,192.168.1.203 \\
   --user root \\
   --password 000000 \\
-  --version 1.21.3
+  --version 1.25.2
 
 Use "$(basename "$0") [command] --help" for more information about a command.
+
+See detailed log >> /var/log/kubeinstall.log 
 EOF
   exit 1
 }
-
+# Script Name    : kubezcloud
+# Version:       : v1.3.2
+# Description    : Install kubernetes cluster using kubeadm.
+# Create Date    : 2023-06-06
+# Author         : GUOChen
+# Email          : 2492246121@qq.com
 function help::details() {
   # 使用帮助
 
   cat <<EOF
 
-Script Name    : kubeeasy
-Version:       : v1.3.2
-Description    : Install kubernetes (HA) cluster using kubeadm.
-Create Date    : 2022-06-01
-Author         : KongYu
-Email          : 2385569970@qq.com
+
 Install kubernetes cluster using kubeadm.
-Documentation: https://github.com/kongyu666/kubeeasy
+Documentation: https://github.com/zcloud/kubezcloud
 
 Usage:
-  $(basename "$0") [command]
+  kubezcloud [command]
 
 Available Commands:
   install         Install cluster service.
@@ -2892,175 +2803,55 @@ Flag:
   -m,--master          master node, example: 10.24.2.10
   -w,--worker          work node, example: 10.24.2.11,10.24.2.12 or 10.24.2.10-10.24.2.20
   -host,--host         other node, example: 10.24.2.11,10.24.2.12 or 10.24.2.10-10.24.2.20
-  -vip,--virtual-ip    k8s ha virtual ipaddress, example: 10.24.2.100
   -u,--user            ssh user, default: ${SSH_USER}
   -p,--password        ssh password, default: ${SSH_PASSWORD}
   -P,--port            ssh port, default: ${SSH_PORT}
   -v,--version         kube version, default: ${KUBE_VERSION}
-  -d,--docker-data     docker store data root, default: ${DOCKER_DATA_ROOT}
   --pod-cidr           kube pod subnet, default: ${KUBE_POD_SUBNET}
   -U,--upgrade-kernel  upgrade kernel
   -of,--offline-file   specify the offline package file to load
-  --images-file        docker images list file, default: ${IMAGES_FILE}
-  --images-dir         docker images save storage dir, default: ${IMAGES_DIR}
-  --images-registry    docker registry. please login first
+
 
 Example:
   [install dependencies package cluster]
-  $0 install dependencies \\
-    --host 192.168.1.201-192.168.1.203 \\
+  kubezcloud install dependencies \\
+    --host 192.168.1.201,192.168.1.203 \\
     --user root \\
     --password 000000 \\
-    --offline-file centos-7-rpms.tar.gz
+    --offline-file /opt/dependencies/packages.tar.gz
 
-  [upgrade kernel cluster]
-  $0 install upgrade-kernel \\
-    --host 192.168.1.201-192.168.1.203 \\
-    --user root \\
-    --password 000000 \\
-    --offline-file kernel-rpms-v5.14.3.tar.gz
 
   [install k8s cluster]
-  $0 install kubernetes \\
+  kubezcloud install kubernetes \\
     --master 192.168.1.201 \\
     --worker 192.168.1.202,192.168.1.203 \\
     --user root \\
     --password 000000 \\
-    --version 1.21.3 \\
+    --version 1.25.2 \\
     --pod-cidr 10.244.0.0/16 \\
-    --offline-file kubeeasy-v1.3.2.tar.gz
+    --offline-file /opt/kubezcloud.tar.gz
 
-  [install k8s ha cluster]
-  $0 install kubernetes \\
-    --master 192.168.1.201,192.168.1.202,192.168.1.203 \\
-    --worker 192.168.1.204,192.168.1.205,192.168.1.206 \\
-    --user root \\
-    --password 000000 \\
-    --version 1.21.3 \\
-    --pod-cidr 10.244.0.0/16 \\
-    --virtual-ip 192.168.1.250 \\
-    --offline-file kubeeasy-v1.3.2.tar.gz
 
-  [reset k8s cluster]
-  $0 reset \\
-    --user root \\
-    --password 000000
+  [add node] ##Only add worker
+  kubeydy-v1.0 add \
+  --worker 10.24.2.31,10.24.2.32 \\
+  --user root \\
+  --password 000000 \\
+  --offline-file /opt/kubezcloud.tar.gz
+
 
   [reset force k8s node]
-  $0 reset --force \\
+  kubezcloud reset --force \\
     --master 192.168.1.201 \\
     --worker 192.168.1.202 \\
     --user root \\
     --password 000000
 
-  [add node]
-  $0 add \\
-    --master 192.168.1.204,192.168.1.205
-    --user root \\
-    --password 000000
+  
+  More features are expected.
 
-  $0 add \\
-    --worker 192.168.1.204,192.168.1.205
-    --user root \\
-    --password 000000
 
-  [delete node]
-  $0 delete \\
-    --master 192.168.1.201 \\
-    --worker 192.168.1.202 \\
-    --user root \\
-    --password 000000
-
-  [remove node]
-  $0 remove \\
-    --master 192.168.1.201 \\
-    --worker 192.168.1.202 \\
-    --user root \\
-    --password 000000
-
-  [docker push images file and load]
-  $0 images load \\
-    --host 192.168.1.201,192.168.1.202,192.168.1.203 \\
-    --user root \\
-    --password 000000 \\
-    --offline-file test-images.tar.gz
-
-  [docker images save]
-  $0 images save \\
-    --images-file images-list.txt \\
-    --images-dir ./images
-
-  [docker images push]
-  docker login dockerhub.kubeeasy.local:5000 -u admin -p admin
-  $0 images push \\
-    --images-file images-list.txt \\
-    --images-registry dockerhub.kubeeasy.local:5000/kongyu
-
-  [create chronyc time]
-  $0 create time \\
-    --master 192.168.1.201 \\
-    --worker 192.168.1.202,192.168.1.203 \\
-    --user root \\
-    --password 000000
-
-  [create ssh keygen]
-  $0 create ssh-keygen \\
-    --master 192.168.1.201 \\
-    --worker 192.168.1.202,192.168.1.203 \\
-    --user root \\
-    --password 000000
-
-  [mount and mkfs disk]
-  $0 create mount-disk \\
-    --host 192.168.1.201-192.168.1.203 \\
-    --disk /dev/sdb \\
-    --mount-dir /data \\
-    --user root \\
-    --password 000000
-
-  [set root password]
-  $0 create password \\
-    --host 192.168.1.201-192.168.1.203 \\
-    --user root \\
-    --password 000000 \\
-    --new-password 123456
-
-  [install system precondition]
-  $0 install precondition \\
-    --host 192.168.1.201-192.168.1.203 \\
-    --user root \\
-    --password 000000
-
-  [get command output]
-  $0 get command \\
-    --host 192.168.1.201-192.168.1.203 \\
-    --user root \\
-    --password 000000 \\
-    --cmd "hostname"
-
-  [check node system]
-  $0 check system \\
-    --host 192.168.1.201-192.168.1.203 \\
-    --user root \\
-    --password 000000
-
-  [check node ssh]
-  $0 check ssh \\
-    --host 192.168.1.201-192.168.1.203 \\
-    --user root \\
-    --password 000000
-
-  [check node ping]
-  $0 check ping \\
-    --host 192.168.1.201-192.168.1.203
-
-  [clear history]
-  $0 set history \\
-    --host 192.168.1.201-192.168.1.203 \\
-    --user root \\
-    --password 000000
-
-  Please refer to the documentation for details.
+  See detailed log >> /var/log/kubeinstall.log 
 
 EOF
   exit 1
@@ -3070,7 +2861,7 @@ EOF
 # main
 ######################################################################################################
 ## 创建日志目录
-[[ ! -f "/var/log/kubeeasy" ]] && mkdir -p /var/log/kubeeasy
+#[[ ! -f "/var/log/kubeeasy" ]] && mkdir -p /var/log/kubeeasy
 
 [ "$#" == "0" ] && help::usage
 
@@ -3182,6 +2973,16 @@ while [ "${1:-}" != "" ]; do
     VIRT_TAG=1
     KUBE_VIRT=${1:-$KUBE_VIRT}
     ;;
+  -so | --istio)
+    shift
+    ISTIO_TAG=1
+    KUBE_ISTIO=${1:-$KUBE_ISTIO}
+	;;
+  -hb | --harbor)
+    shift
+    HARBOR_TAG=1
+    KUBE_HARBOR=${1:-$KUBE_HARBOR}
+	;;
   # image
   save)
     SAVE_IMAGE_TAG=1
@@ -3400,6 +3201,14 @@ elif [[ "${ADD_TAG:-}" == "1" ]]; then
   }
   [[ "${VIRT_TAG:-}" == "1" ]] && {
     add::virt
+    add=1
+  }
+  [[ "${ISTIO_TAG:-}" == "1" ]] && {
+    add::istio
+    add=1
+  }
+  [[ "${HARBOR_TAG:-}" == "1" ]] && {
+    add::harbor
     add=1
   }
   [[ "$MASTER_NODES" != "" || "$WORKER_NODES" != "" ]] && {
