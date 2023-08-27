@@ -703,7 +703,7 @@ function script::install_containerd() {
     # mv /usr/bin/{docker.service,containerd.service} /etc/systemd/system/ || true
     # rm -rf /tmp/docker
   # }
-  #[ -e /etc/cni/net.d/ ] && dnf  -y remove kubernetes-cni &&  dnf install -y --skip-broken   /tmp/packages/*kube*.rpm
+  #[ -e /etc/cni/net.d/ ] && yum  -y remove kubernetes-cni &&  yum install -y --skip-broken   /tmp/packages/*kube*.rpm
   #[ -f /usr/share/bash-completion/completions/docker ] && cp -f /usr/share/bash-completion/completions/docker /etc/bash_completion.d/;
   #[ ! -d ${DOCKER_DATA_ROOT} ] && mkdir -p ${DOCKER_DATA_ROOT}
   #[ ! -d /etc/docker ] && mkdir /etc/docker
@@ -726,6 +726,7 @@ EOF
     mkdir -p /etc/containerd;
     containerd config default | sudo tee /etc/containerd/config.toml;
     sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' /etc/containerd/config.toml;
+    sed -i 's#registry.k8s.io/pause:3.6#registry.k8s.io/pause:3.8#g' /etc/containerd/config.toml;
     
 
     cat <<EOF >/etc/crictl.yaml
@@ -1748,6 +1749,7 @@ function add::storage() {
 EOF
     systemctl restart nfs-server rpcbind
     systemctl enable nfs-server rpcbind
+    sed -i "s/127.0.0.1/${MGMT_NODE}/" "${NFS_YAML}"
     "
     kube::apply "${NFS_YAML}"
     kube::wait "nfs-client-provisioner" "kube-system" "pods" "app=nfs-client-provisioner"
@@ -1955,7 +1957,7 @@ function reset::node() {
       [ -d /sys/class/net/\${int} ] && ip link delete \${int}
     done
     modprobe -r ipip
-	[ -e /etc/cni/net.d/ ] && dnf -y remove kubernetes-cni &&  dnf install -y  /tmp/packages/*kube*.rpm
+	[ -e /etc/cni/net.d/ ] && yum -y remove kubernetes-cni &&  yum install -y  /tmp/packages/*kube*.rpm
 	rm -rf /data/nfs
     echo done.
   "
@@ -2124,7 +2126,7 @@ function offline::load_depend() {
       index=1
 
       
-      dnf install -y  ${RPMS_DIR}/*.rpm
+      yum install -y  ${RPMS_DIR}/*.rpm
       echo \$! > /tmp/pid_temp/temp\${index}.pid
       ((index++))
       
@@ -2159,7 +2161,7 @@ function offline::cluster_depend() {
 
   log::info "[install]" "install sshpass packages on local."
   rm -rf /etc/yum.repos.d/*
-  [[ ! -f "/usr/bin/sshpass" ]] && dnf install -y  /tmp/packages/sshpass-*.rpm &>$LOG_FILE || true
+  [[ ! -f "/usr/bin/sshpass" ]] && yum install -y  /tmp/packages/sshpass-*.rpm &>$LOG_FILE || true
   check::exit_code "$?" "install" "install sshpass packages"
 
   offline::load_depend
@@ -2195,7 +2197,7 @@ function offline::load_kernel() {
       rm -rf /etc/yum.repos.d/*
       mkdir -p /tmp/pid_temp/
       index=1
-      nohup dnf install -y --skip-broken ${RPMS_DIR}/*.rpm &> /dev/null &
+      nohup yum install -y --skip-broken ${RPMS_DIR}/*.rpm &> /dev/null &
       echo \$! > /tmp/pid_temp/temp\${index}.pid
     "
     check::exit_code "$?" "install" "${host}: install kernel packages in nohup" "exit"
