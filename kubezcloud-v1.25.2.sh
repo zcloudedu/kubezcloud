@@ -1750,7 +1750,7 @@ EOF
     systemctl restart nfs-server rpcbind
     systemctl enable nfs-server rpcbind
     "
-    sed -i "s#127.0.0.0#${MGMT_NODE}#g" ${NFS_YAML}
+    sed -i "s#127.0.0.1#${MGMT_NODE}#g" ${NFS_YAML}
     kube::apply "${NFS_YAML}"
     kube::wait "nfs-client-provisioner" "kube-system" "pods" "app=nfs-client-provisioner"
   elif [[ "$KUBE_STORAGE" == "local" ]]; then
