@@ -203,7 +203,7 @@ function utils::download_file() {
       if [[ \"${unzip_tag}\" == \"unzip\" ]]; then
         command -v unzip 2>/dev/null || yum install -y unzip
         unzip -o \"${dest}\" -d \"${dest_dirname}\"
-		
+
       fi
     else
       echo \"${dest} is exists!\"
@@ -696,7 +696,7 @@ function script::install_containerd() {
   # if [[ "${OFFLINE_TAG:-}" != "1" ]]; then
         # [ -f /usr/bin/docker ] && yum remove -y docker-ce docker-ce-cli;
         # [ -f /usr/bin/containerd ] && yum remove -y containerd.io;
-  # yum install -y "docker-ce${version}" "docker-ce-cli${version}" containerd.io bash-completion;	
+  # yum install -y "docker-ce${version}" "docker-ce-cli${version}" containerd.io bash-completion;
   # [[ ! -f "/usr/bin/docker" ]] && {
     # tar -zxvf ${OFFLINE_DIR}/packages/docker-v20.10.9.tar.gz -C /tmp
     # cp -rvf /tmp/docker/* /usr/bin/
@@ -714,7 +714,7 @@ nameserver 114.114.114.114
 nameserver 223.5.5.5
 EOF
     #[ ! -d /home/dashboard-cn ] && mkdir /home/dashboard-cn;
-	modprobe overlay;
+        modprobe overlay;
     modprobe br_netfilter;
     cat  > /etc/sysctl.d/k8s.conf <<EOF
 net.bridge.bridge-nf-call-ip6tables = 1
@@ -722,10 +722,11 @@ net.bridge.bridge-nf-call-iptables = 1
 EOF
 
     sysctl -p /etc/sysctl.d/k8s.conf > /dev/null 2>&1;
-	sysctl --system;
+        sysctl --system;
     mkdir -p /etc/containerd;
     containerd config default | sudo tee /etc/containerd/config.toml;
     sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' /etc/containerd/config.toml;
+    sed -i 's#registry.k8s.io/pause:3.6#registry.k8s.io/pause:3.8#' /etc/containerd/config.toml;
     
 
     cat <<EOF >/etc/crictl.yaml
@@ -1125,7 +1126,7 @@ function install::package() {
   for host in $MASTER_NODES $WORKER_NODES; do
     # install docker
     log::info "[install]" "install ${KUBE_CRI} on $host."
-	# export DOCKER_DATA_ROOT=${DOCKER_DATA_ROOT}
+        # export DOCKER_DATA_ROOT=${DOCKER_DATA_ROOT}
     command::exec "${host}" "
       export OFFLINE_TAG=${OFFLINE_TAG:-0}
       export OFFLINE_DIR=${OFFLINE_DIR}
@@ -1395,7 +1396,7 @@ nodeRegistration:
   criSocket: unix:///var/run/containerd/containerd.sock
   imagePullPolicy: IfNotPresent
   taints: null
-  pod-infra-container-image: k8s.gcr.io/pause:3.6
+  pod-infra-container-image: registry.k8s.io/pause:3.8
 ---
 apiServer:
   timeoutForControlPlane: 4m0s
@@ -1416,7 +1417,7 @@ apiVersion: kubeadm.k8s.io/v1beta3
 certificatesDir: /etc/kubernetes/pki
 clusterName: kubernetes
 controllerManager: {}
-dns: {}
+yum: {}
 etcd:
   local:
     dataDir: /var/lib/etcd
@@ -1425,7 +1426,7 @@ kind: ClusterConfiguration
 kubernetesVersion: $KUBE_VERSION
 controlPlaneEndpoint: $KUBE_APISERVER:${KUBE_PORT}
 networking:
-  dnsDomain: $KUBE_DNSDOMAIN
+  yumDomain: $KUBE_DNSDOMAIN
   podSubnet: $KUBE_POD_SUBNET
   serviceSubnet: $KUBE_SERVICE_SUBNET
 scheduler: {}
@@ -1637,8 +1638,8 @@ function kube::status() {
         # "content": "'"kubeeasy install info: ${COMMAND_OUTPUT}"'"
      # },
     # "at": {
-	    # "isAtAll": true
-	  # }
+            # "isAtAll": true
+          # }
   # }' &>/dev/null || true
 
 }
@@ -1698,7 +1699,7 @@ function add::network() {
     check::exit_code "$?" "flannel" "change flannel pod subnet"
     kube::apply "${flannel_file}"
     kube::wait "flannel" "kube-system" "pods" "app=flannel"
-    #local coredn_file="/tmp/kubernetes/manifests/coredns-cm.yaml"
+    #local coredn_file="/tmp/kubernetes/manifests/coreyum-cm.yaml"
     #kube::apply "${coredn_file}"
 
   elif [[ "$KUBE_NETWORK" == "calico" ]]; then
@@ -1742,13 +1743,14 @@ function add::storage() {
     log::info "[storage]" "add local storage class"
     command::exec "${MGMT_NODE}" "
       mkdir -p /data/nfs
-	  chmod 777 /data/nfs -R 
-	  cat << EOF >/etc/exports
+          chmod 777 /data/nfs -R 
+          cat << EOF >/etc/exports
 /data/nfs  *(rw,sync,no_root_squash)
 EOF
     systemctl restart nfs-server rpcbind
     systemctl enable nfs-server rpcbind
     "
+    sed -i "s#127.0.0.0#${MGMT_NODE}#g" ${NFS_YAML}
     kube::apply "${NFS_YAML}"
     kube::wait "nfs-client-provisioner" "kube-system" "pods" "app=nfs-client-provisioner"
   elif [[ "$KUBE_STORAGE" == "local" ]]; then
@@ -1804,14 +1806,14 @@ function add::ui() {
     log::info "[ui]" "add kuboard"
     local kuboard_file="${OFFLINE_DIR}/manifests/recommended.yaml"
     local kuboardadmin_file="${OFFLINE_DIR}/manifests/dashboard-adminuser.yaml"
-	local components_file="${OFFLINE_DIR}/manifests/components.yaml"
+        local components_file="${OFFLINE_DIR}/manifests/components.yaml"
     #[[ -f "${kuboard_file}" ]] || utils::download_file "${GITHUB_PROXY}https://raw.githubusercontent.com/kongyu666/kubeeasy/main/manifests/kuboard-v2.yaml" "${kuboard_file}"
     #[[ -f "${metrics_file}" ]] || utils::download_file "${GITHUB_PROXY}https://raw.githubusercontent.com/kongyu666/kubeeasy/main/manifests/metrics-server.yaml" "${metrics_file}"
-	kube::apply "${kuboard_file}"
+        kube::apply "${kuboard_file}"
     kube::wait "kubernetes-dashbaord" "kube-system" "pods" "k8s-app=kubernetes-dashboard"
-	kube::apply "${kuboardadmin_file}"
-	kube::apply "${components_file}"
-	kube::wait "metrics-server" "kube-system" "pods" "k8s-app=metrics-server"
+        kube::apply "${kuboardadmin_file}"
+        kube::apply "${components_file}"
+        kube::wait "metrics-server" "kube-system" "pods" "k8s-app=metrics-server"
     
     #local dashboard_token=""
     #command::exec "${MGMT_NODE}" "
@@ -1832,15 +1834,15 @@ function add::harbor(){
   #local LOCAL_HOST=$(cat /etc/hosts |grep master | awk '{print $1}')
   if [[ "$KUBE_HARBOR" == "harbor" ]]; then
     log::info "[harbor]" "add harbor"
-	command::exec "${MGMT_NODE}" "
-	  kubectl create ns harbor
-	  sed -i 's#127.0.0.1:80#$MGMT_NODE:80#g' /tmp/kubezcloud/harbor/values.yaml
-	  helm install harbor -n harbor /tmp/kubezcloud/harbor/
+        command::exec "${MGMT_NODE}" "
+          kubectl create ns harbor
+          sed -i 's#127.0.0.1:80#$MGMT_NODE:80#g' /tmp/kubezcloud/harbor/values.yaml
+          helm install harbor -n harbor /tmp/kubezcloud/harbor/
     "
-	kube::wait "harbor-nginx" "harbor" "pods" "component=nginx"
-	kube::wait "harbor-core" "harbor" "pods" "component=core"
-	kube::wait "harbor-jobservice" "harbor" "pods" "component=jobservice"
-	kube::wait "notary-signer" "harbor" "pods" "component=notary-signer"
+        kube::wait "harbor-nginx" "harbor" "pods" "component=nginx"
+        kube::wait "harbor-core" "harbor" "pods" "component=core"
+        kube::wait "harbor-jobservice" "harbor" "pods" "component=jobservice"
+        kube::wait "notary-signer" "harbor" "pods" "component=notary-signer"
     #log::access
   # elif [[ "$KUBE_VIRT" == "kata" ]]; then
     # echo "none."
@@ -1853,26 +1855,26 @@ function add::istio(){
   local OFFLINE_DIR=${OFFLINE_DIR}
   if [[ "$KUBE_ISTIO" == "istio" ]]; then
     local GRAFANA_FILE="${OFFLINE_DIR}/manifests/grafana.yaml"
-	local JAEGER_FILE="${OFFLINE_DIR}/manifests/jaeger.yaml"
-	local KIALI_FILE="${OFFLINE_DIR}/manifests/kiali.yaml"
-	local PROMETHEUS_FILE="${OFFLINE_DIR}/manifests/prometheus.yaml"
+        local JAEGER_FILE="${OFFLINE_DIR}/manifests/jaeger.yaml"
+        local KIALI_FILE="${OFFLINE_DIR}/manifests/kiali.yaml"
+        local PROMETHEUS_FILE="${OFFLINE_DIR}/manifests/prometheus.yaml"
     log::info "[istio]" "add istio"
-	command::exec "${MGMT_NODE}" "
-	  istioctl install -y --set profile=demo
-	"
-	kube::wait "istiod" "istio-system" "pods" "app=istiod"
-	kube::wait "istio-egressgateway" "istio-system" "pods" "app=istio-egressgateway"
-	kube::wait "istio-ingressgateway" "istio-system" "pods" "app=istio-ingressgateway"
-	
-	kube::apply "${GRAFANA_FILE}"
-	kube::apply "${JAEGER_FILE}"
-	kube::apply "${KIALI_FILE}"
-	kube::apply "${PROMETHEUS_FILE}"
-	kube::wait "grafana" "istio-system" "pods" "app.kubernetes.io/instance=grafana"
-	kube::wait "jaeger" "istio-system" "pods" "app=jaeger"
-	kube::wait "kiali" "istio-system" "pods" "app.kubernetes.io/instance=kiali"
-	kube::wait "prometheus" "istio-system" "pods" "app=prometheus"
-	#log::access
+        command::exec "${MGMT_NODE}" "
+          istioctl install -y --set profile=demo
+        "
+        kube::wait "istiod" "istio-system" "pods" "app=istiod"
+        kube::wait "istio-egressgateway" "istio-system" "pods" "app=istio-egressgateway"
+        kube::wait "istio-ingressgateway" "istio-system" "pods" "app=istio-ingressgateway"
+
+        kube::apply "${GRAFANA_FILE}"
+        kube::apply "${JAEGER_FILE}"
+        kube::apply "${KIALI_FILE}"
+        kube::apply "${PROMETHEUS_FILE}"
+        kube::wait "grafana" "istio-system" "pods" "app.kubernetes.io/instance=grafana"
+        kube::wait "jaeger" "istio-system" "pods" "app=jaeger"
+        kube::wait "kiali" "istio-system" "pods" "app.kubernetes.io/instance=kiali"
+        kube::wait "prometheus" "istio-system" "pods" "app=prometheus"
+        #log::access
 
   else
     log::warning "[ui]" "No $KUBE_UI config."
@@ -1886,10 +1888,10 @@ function add::virt() {
 
   if [[ "$KUBE_VIRT" == "kubevirt" ]]; then
     # log::info "[offline]" "unzip offline kubvirt package on local."
-	# command::exec "${MGMT_NODE}" "
+        # command::exec "${MGMT_NODE}" "
       # [[ ! -d "/tmp/kubevirt" ]] && tar -zxf "/opt/kubevirt.tar.gz" -C ${TMP_DIR} || true
-	  # [[ -d "/tmp/kubevirt" ]] && cp -rvf /tmp/kubevirt/tools/virtctl-v0.47.1-linux-amd64 /usr/local/bin/ || true
-	# "
+          # [[ -d "/tmp/kubevirt" ]] && cp -rvf /tmp/kubevirt/tools/virtctl-v0.47.1-linux-amd64 /usr/local/bin/ || true
+        # "
     # check::exit_code "$?" "offline" "unzip offline kubvirt package"
     log::info "[virt]" "add kubevirt"
     local kubevirt_operator="${OFFLINE_DIR}/manifests/kubevirt-operator.yaml"
@@ -1917,10 +1919,10 @@ function add::virt() {
        # kubectl get pod -n kubevirt -o wide
        # echo ''
     # " && printf "%s \n" "${COMMAND_OUTPUT}"
-	
+
   # elif [[ "$KUBE_VIRT" == "kata" ]]; then
     # echo "none."
-	#log::access
+        #log::access
   else
     log::warning "[ui]" "No $KUBE_UI config."
   fi
@@ -1937,26 +1939,26 @@ function reset::node() {
     [ -f \"\$(which kubelet)\" ] && { systemctl stop kubelet; find /var/lib/kubelet | xargs -n 1 findmnt -n -o TARGET -T | sort | uniq | xargs -r umount -v; rm -rf /usr/local/bin/{kubeadm,kubelet,kubectl,helm}; }
     [ -d /etc/kubernetes ] && rm -rf /etc/kubernetes/* /var/lib/kubelet/* /var/lib/etcd/* \$HOME/.kube /etc/cni/net.d/*  /var/lib/cni/*/var/lib/dockershim/*  /var/run/kubernetes/*
     # rm -rf  /etc/cni/net.d/* /var/lib/cni/*
-	#docker_data_dir=\$(cat /etc/docker/daemon.json | grep data-root | awk -F '\"' '{print \$4}')
+        #docker_data_dir=\$(cat /etc/docker/daemon.json | grep data-root | awk -F '\"' '{print \$4}')
     #[ -f \"\$(which docker)\" ] && { docker rm -f -v \$(docker ps | grep kube | awk '{print \$1}'); systemctl stop docker; rm -rf \$HOME/.docker /etc/docker/* /var/lib/docker/* \${docker_data_dir} /usr/bin/{containerd,containerd-shim,containerd-shim-runc-v2,ctr,docker,docker-compose,dockerd,docker-init,docker-proxy,runc};}
     #[ -f \"\$(which containerd)\" ] && { crictl rm \$(crictl ps -a -q); systemctl stop containerd; rm -rf /etc/containerd/* /var/lib/containerd/*; }
     hostnamectl set-hostname localhost
     systemctl disable kubelet docker containerd 
-	# && rm -rf /etc/systemd/system/{docker.service,containerd.service} /etc/systemd/system/kubelet.service*
+        # && rm -rf /etc/systemd/system/{docker.service,containerd.service} /etc/systemd/system/kubelet.service*
     #rm -rf /opt/cni /data/registry /opt/containerd/ /root/.kubeeasy ${TMP_DIR}/kubeeasy 
-	rm -rf /opt/cni opt/containerd/ 
+        rm -rf /opt/cni opt/containerd/ 
     sed -i -e \"/${KUBE_APISERVER}/d\" -e '/worker/d' -e '/master/d' -e "/^$/d"  -e '/dockerhub.kubeeasy.local/d' /etc/hosts
     rm -rf /etc/profile.d/ssh-login-info.sh
     sed -i '/## kubeeasy managed start/,/## kubeeasy managed end/d' /etc/hosts /etc/security/limits.conf /etc/systemd/system.conf /etc/bashrc /etc/rc.local /etc/audit/rules.d/audit.rules
     ipvsadm --clear
     iptables -F && iptables -t nat -F && iptables -t mangle -F && iptables -X
-    for int in kube-ipvs0 cni0 docker0 dummy0 flannel.1 cilium_host cilium_net cilium_vxlan lxc_health nodelocaldns 
+    for int in kube-ipvs0 cni0 docker0 dummy0 flannel.1 cilium_host cilium_net cilium_vxlan lxc_health nodelocalyum 
     do
       [ -d /sys/class/net/\${int} ] && ip link delete \${int}
     done
     modprobe -r ipip
-	[ -e /etc/cni/net.d/ ] && dnf -y remove kubernetes-cni &&  dnf install -y  /tmp/packages/*kube*.rpm
-	rm -rf /data/nfs
+        [ -e /etc/cni/net.d/ ] && dnf -y remove kubernetes-cni &&  dnf install -y  /tmp/packages/*kube*.rpm
+        rm -rf /data/nfs
     echo done.
   "
   check::exit_code "$?" "reset" "$host: reset"
@@ -2130,7 +2132,7 @@ function offline::load_depend() {
       
     "
     check::exit_code "$?" "install" "${host}: install dependencies packages " "exit"
-	
+
   done
     ## 清除临时文件
   for host in ${hosts}; do
@@ -2510,7 +2512,7 @@ function remove::node() {
       kubeadm reset -f
       ipvsadm --clear
       iptables -F && iptables -t nat -F && iptables -t mangle -F && iptables -X
-      for int in kube-ipvs0 cni0 dummy0 flannel.1 cilium_host cilium_net cilium_vxlan lxc_health nodelocaldns
+      for int in kube-ipvs0 cni0 dummy0 flannel.1 cilium_host cilium_net cilium_vxlan lxc_health nodelocalyum
       do
         [ -d /sys/class/net/\${int} ] && ip link delete \${int}
       done
@@ -2745,7 +2747,7 @@ Create Date    : 2023-06-06
 Author         : GUOChen
 Email          : 2492246121@qq.com
 Install kubernetes cluster using kubeadm.
-Documentation: https://github.com/zcloud/kubezcloud
+Documentation: https://github.com/zcloudedu/kubezcloud
 
 Usage:
   $(basename "$0") [command]
@@ -2758,12 +2760,13 @@ Flags:
 
 Example:
   [install k8s cluster]
-  kubezcloud install k8s \\
+  kubezcloud install kubernetes \\
   --master 192.168.1.201 \\
   --worker 192.168.1.202,192.168.1.203 \\
   --user root \\
-  --password 000000 \\
-  --version 1.25.2
+  --password zcloud@9000 \\
+  --version 1.25.2  \\
+  --offline-file /opt/kubezcloud.tar.gz 
 
 Use "$(basename "$0") [command] --help" for more information about a command.
 
@@ -2817,7 +2820,7 @@ Example:
   kubezcloud install dependencies \\
     --host 192.168.1.201,192.168.1.203 \\
     --user root \\
-    --password 000000 \\
+    --password zcloud@9000 \\
     --offline-file /opt/dependencies/packages.tar.gz
 
 
@@ -2826,7 +2829,7 @@ Example:
     --master 192.168.1.201 \\
     --worker 192.168.1.202,192.168.1.203 \\
     --user root \\
-    --password 000000 \\
+    --password zcloud@9000 \\
     --version 1.25.2 \\
     --pod-cidr 10.244.0.0/16 \\
     --offline-file /opt/kubezcloud.tar.gz
@@ -2836,7 +2839,7 @@ Example:
   kubeydy-v1.0 add \
   --worker 10.24.2.31,10.24.2.32 \\
   --user root \\
-  --password 000000 \\
+  --password zcloud@9000 \\
   --offline-file /opt/kubezcloud.tar.gz
 
 
@@ -2845,7 +2848,7 @@ Example:
     --master 192.168.1.201 \\
     --worker 192.168.1.202 \\
     --user root \\
-    --password 000000
+    --password zcloud@9000
 
   
   More features are expected.
@@ -2977,12 +2980,12 @@ while [ "${1:-}" != "" ]; do
     shift
     ISTIO_TAG=1
     KUBE_ISTIO=${1:-$KUBE_ISTIO}
-	;;
+        ;;
   -hb | --harbor)
     shift
     HARBOR_TAG=1
     KUBE_HARBOR=${1:-$KUBE_HARBOR}
-	;;
+        ;;
   # image
   save)
     SAVE_IMAGE_TAG=1
