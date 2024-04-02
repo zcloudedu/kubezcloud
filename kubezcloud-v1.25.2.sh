@@ -2836,7 +2836,7 @@ Example:
 
 
   [add node] ##Only add worker
-  kubeydy-v1.0 add \
+  kubezcloud add \
   --worker 10.24.2.31,10.24.2.32 \\
   --user root \\
   --password zcloud@9000 \\
