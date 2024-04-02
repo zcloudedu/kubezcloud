@@ -2810,7 +2810,6 @@ Flag:
   -p,--password        ssh password, default: ${SSH_PASSWORD}
   -P,--port            ssh port, default: ${SSH_PORT}
   -v,--version         kube version, default: ${KUBE_VERSION}
-  --pod-cidr           kube pod subnet, default: ${KUBE_POD_SUBNET}
   -U,--upgrade-kernel  upgrade kernel
   -of,--offline-file   specify the offline package file to load
 
@@ -2831,7 +2830,6 @@ Example:
     --user root \\
     --password zcloud@9000 \\
     --version 1.25.2 \\
-    --pod-cidr 10.244.0.0/16 \\
     --offline-file /opt/kubezcloud.tar.gz
 
 
