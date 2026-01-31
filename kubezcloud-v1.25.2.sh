@@ -2741,36 +2741,31 @@ function help::usage() {
 # Version:       : v1.3.2
   cat <<EOF
 
-
-Description    : Install kubernetes cluster using kubeadm.
-Create Date    : 2023-06-06
-Author         : GUOChen
-Email          : 2492246121@qq.com
 Install kubernetes cluster using kubeadm.
 Documentation: https://github.com/zcloudedu/kubezcloud
 
 Usage:
-  $(basename "$0") [command]
+  kubeeasy [command]
 
 Available Commands:
-  install            Install Service Cluster.
+  install            Install Service cluster.
 
 Flags:
-  -h, --help               help for kubezcloud
+  -h, --help               help for kubeeasy
 
 Example:
   [install k8s cluster]
-  kubezcloud install kubernetes \\
-  --master 192.168.1.201 \\
-  --worker 192.168.1.202,192.168.1.203 \\
-  --user root \\
-  --password zcloud@9000 \\
-  --version 1.25.2  \\
-  --offline-file /opt/kubezcloud.tar.gz 
+  kubeeasy install k8s \
+  --master 10.24.2.10 \
+  --worker 10.24.2.20,10.24.2.30,10.24.2.40 \
+  --user root \
+  --password Abc@1234 \
+  --version 1.29.5
 
-Use "$(basename "$0") [command] --help" for more information about a command.
+Use "kubeeasy [command] --help" for more information about a command.
 
-See detailed log >> /var/log/kubeinstall.log 
+  See detailed log >> /var/log/kubeinstall.log 
+  
 EOF
   exit 1
 }
@@ -2784,76 +2779,64 @@ function help::details() {
   # 使用帮助
 
   cat <<EOF
-
-
+  
 Install kubernetes cluster using kubeadm.
-Documentation: https://github.com/zcloud/kubezcloud
+Documentation: https://github.com/yidaoyun/kubeeasy
 
 Usage:
-  kubezcloud [command]
+  kubeeasy [command]
 
 Available Commands:
   install         Install cluster service.
-  create          create service.
   reset           Reset Kubernetes cluster.
-  add             Add node to the cluster.
-  remove          Remove node from the cluster.
-  delete          Delete node from the cluster.
-  check           Check cluster system.
-  images          docker image save or push.
+  create          create service.
+  add             Add service/node to the cluster.
+  del             Remove node from the cluster.
 
 Flag:
   -m,--master          master node, example: 10.24.2.10
   -w,--worker          work node, example: 10.24.2.11,10.24.2.12 or 10.24.2.10-10.24.2.20
   -host,--host         other node, example: 10.24.2.11,10.24.2.12 or 10.24.2.10-10.24.2.20
-  -u,--user            ssh user, default: ${SSH_USER}
-  -p,--password        ssh password, default: ${SSH_PASSWORD}
-  -P,--port            ssh port, default: ${SSH_PORT}
-  -v,--version         kube version, default: ${KUBE_VERSION}
-  -U,--upgrade-kernel  upgrade kernel
+  --add                add k8s cluster node.
+  --delete             delete k8s cluster node.
+  -u,--user            ssh user, default: root
+  -p,--password        ssh password, default: Abc@1234
+  -P,--port            ssh port, default: 22
+  -v,--version         kube version, default: 1.29.5
+  --pod-cidr           kube pod subnet, default: 10.244.0.0/16
   -of,--offline-file   specify the offline package file to load
-
 
 Example:
   [install dependencies package cluster]
-  kubezcloud install dependencies \\
-    --host 192.168.1.201,192.168.1.203 \\
-    --user root \\
-    --password zcloud@9000 \\
-    --offline-file /opt/dependencies/packages.tar.gz
+  kubeeasy install dependencies \
+  --host 10.24.2.10,10.24.2.20,10.24.2.30 \
+  --user root \
+  --password Abc@1234 \
+  --offline-file /opt/dependencies/packages.tar.gz
 
+  [install k8s cluster offline]
+  kubeeasy install kubernetes \
+  --master 10.24.2.10 \
+  --worker 10.24.2.20,10.24.2.30,10.24.2.40 \
+  --user root \
+  --password Abc@1234 \
+  --version 1.29.5 \
+  --offline-file /opt/kubeeasy.tar.gz
 
-  [install k8s cluster]
-  kubezcloud install kubernetes \\
-    --master 192.168.1.201 \\
-    --worker 192.168.1.202,192.168.1.203 \\
-    --user root \\
-    --password zcloud@9000 \\
-    --version 1.25.2 \\
-    --offline-file /opt/kubezcloud.tar.gz
+  [add harbor]
+  kubeeasy add --registry harbor
 
+  [add virt]
+  kubeeasy add --virt kubevirt
 
-  [add node] ##Only add worker
-  kubezcloud add \
-  --worker 10.24.2.31,10.24.2.32 \\
-  --user root \\
-  --password zcloud@9000 \\
-  --offline-file /opt/kubezcloud.tar.gz
+  [add istio]
+  kubeeasy add --istio istio
 
-
-  [reset force k8s node]
-  kubezcloud reset --force \\
-    --master 192.168.1.201 \\
-    --worker 192.168.1.202 \\
-    --user root \\
-    --password zcloud@9000
-
-  
   More features are expected.
 
 
-  See detailed log >> /var/log/kubeinstall.log 
-
+  See detailed log >> /var/log/kubeinstall.log
+  
 EOF
   exit 1
 }
