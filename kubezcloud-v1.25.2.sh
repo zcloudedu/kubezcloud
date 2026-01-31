@@ -375,7 +375,7 @@ function script::init_node() {
   # clean
   sed -i -e "/$KUBE_APISERVER/d" -e '/worker/d' -e '/master/d' /etc/hosts
 
-  sed -i '/## kubeeasy managed start/,/## kubeeasy managed end/d' /etc/security/limits.conf /etc/systemd/system.conf /etc/bashrc /etc/rc.local /etc/audit/rules.d/audit.rules
+  sed -i '/## kubezcloud managed start/,/## kubezcloud managed end/d' /etc/security/limits.conf /etc/systemd/system.conf /etc/bashrc /etc/rc.local /etc/audit/rules.d/audit.rules
 
   # Disable selinux
   sed -i 's/SELINUX=.*/SELINUX=disabled/' /etc/selinux/config
@@ -404,7 +404,7 @@ function script::init_node() {
   # Change limits
   [ ! -f /etc/security/limits.conf_bak ] && cp /etc/security/limits.conf{,_bak}
   cat << EOF >> /etc/security/limits.conf
-## kubeeasy managed start
+## kubezcloud managed start
 root soft nofile 655360
 root hard nofile 655360
 root soft nproc 655360
@@ -417,21 +417,21 @@ root hard core unlimited
 * hard nproc 655360
 * soft core unlimited
 * hard core unlimited
-## kubeeasy managed end
+## kubezcloud managed end
 EOF
 
   [ -f /etc/security/limits.d/20-nproc.conf ] && sed -i 's#4096#655360#g' /etc/security/limits.d/20-nproc.conf
   cat << EOF >> /etc/systemd/system.conf
-## kubeeasy managed start
+## kubezcloud managed start
 DefaultLimitCORE=infinity
 DefaultLimitNOFILE=655360
 DefaultLimitNPROC=655360
 DefaultTasksMax=75%
-## kubeeasy managed end
+## kubezcloud managed end
 EOF
 
    # Change sysctl
-   cat << EOF >  /etc/sysctl.d/99-kubeeasy.conf
+   cat << EOF >  /etc/sysctl.d/99-kubezcloud.conf
 # https://www.kernel.org/doc/Documentation/sysctl/
 # 开启IP转发.
 net.ipv4.ip_forward = 1
@@ -459,7 +459,7 @@ EOF
 
   # history
   cat <<EOF >>/etc/bashrc
-## kubeeasy managed start
+## kubezcloud managed start
 # history actions record，include action time, user, login ip
 HISTFILESIZE=100000
 HISTSIZE=100000
@@ -476,7 +476,7 @@ export HISTFILESIZE HISTSIZE HISTTIMEFORMAT HISTFILE PROMPT_COMMAND
 
 # PS1
 PS1='\[\033[0m\]\[\033[1;36m\][\u\[\033[0m\]@\[\033[1;32m\]\h\[\033[0m\] \[\033[1;31m\]\W\[\033[0m\]\[\033[1;36m\]]\[\033[33;1m\]\\$ \[\033[0m\]'
-## kubeeasy managed end
+## kubezcloud managed end
 EOF
 
 
@@ -1202,17 +1202,17 @@ function init::node_config() {
     # 设置主机名和解析
     log::info "[init]" "master: $host set hostname and hosts"
     command::exec "${host}" "
-      sed -i '/## kubeeasy managed/d' /etc/hosts
+      sed -i '/## kubezcloud managed/d' /etc/hosts
       cat << EOF >> /etc/hosts
-## kubeeasy managed start
+## kubezcloud managed start
 ${KUBE_APISERVER_IP} $KUBE_APISERVER
-${MGMT_NODE} zcloud.kubeeasy.local
+${MGMT_NODE} zcloud.kubezcloud.local
 $(
       echo -e $node_hosts
     )
-## kubeeasy managed end
+## kubezcloud managed end
 EOF
-      sed -i '/## kubeeasy managed start/,/## kubeeasy managed start/{/^$/d}' /etc/hosts
+      sed -i '/## kubezcloud managed start/,/## kubezcloud managed start/{/^$/d}' /etc/hosts
       sed -i '/127.0.0.1 temp/d' /etc/hosts
       hostnamectl set-hostname ${HOSTNAME_PREFIX}-master-node${master_index}
     "
@@ -1235,16 +1235,16 @@ EOF
     # 设置主机名和解析
     log::info "[init]" "master: $host set hostname and hosts"
     command::exec "${host}" "
-      sed -i '/## kubeeasy managed/d' /etc/hosts
+      sed -i '/## kubezcloud managed/d' /etc/hosts
       cat << EOF >> /etc/hosts
-## kubeeasy managed start
+## kubezcloud managed start
 ${KUBE_APISERVER_IP} $KUBE_APISERVER
 $(
       echo -e $node_hosts
     )
-## kubeeasy managed end
+## kubezcloud managed end
 EOF
-      sed -i '/## kubeeasy managed start/,/## kubeeasy managed start/{/^$/d}' /etc/hosts
+      sed -i '/## kubezcloud managed start/,/## kubezcloud managed start/{/^$/d}' /etc/hosts
       sed -i '/127.0.0.1 temp/d' /etc/hosts
       hostnamectl set-hostname ${HOSTNAME_PREFIX}-worker-node${worker_index}
     "
@@ -1328,7 +1328,7 @@ function init::add_node() {
   #向集群节点添加新增的节点主机名解析
   for host in $(echo -ne "$node_hosts" | awk '{print $1}'); do
     command::exec "${host}" "
-       sed -E -i \"/## kubeeasy managed end/i $add_node_hosts\" /etc/hosts
+       sed -E -i \"/## kubezcloud managed end/i $add_node_hosts\" /etc/hosts
        sed -i '/127.0.0.1 temp/d' /etc/hosts
      "
     check::exit_code "$?" "init" "$host add new node hosts"
@@ -1346,25 +1346,25 @@ function kubeadm::init() {
   [ -n "${VIRTUAL_IP}" ] && KUBE_PORT=${KUBE_APISERVER_PORT}
   command::exec "${MGMT_NODE}" "
     # 标记是普通集群
-    mkdir -p /root/.kubeeasy/
-    echo \"ha=0\" > /root/.kubeeasy/cluster
-    echo \"vip=0\" >> /root/.kubeeasy/cluster
-    echo \"root_pass=${SSH_PASSWORD}\" >> /root/.kubeeasy/cluster
+    mkdir -p /root/.kubezcloud/
+    echo \"ha=0\" > /root/.kubezcloud/cluster
+    echo \"vip=0\" >> /root/.kubezcloud/cluster
+    echo \"root_pass=${SSH_PASSWORD}\" >> /root/.kubezcloud/cluster
   "
   # 配置kube-vip yaml
   # if [[ -n "${VIRTUAL_IP}" ]]; then
     # command::exec "${MGMT_NODE}" "
     # # 标记是HA集群
-    # mkdir -p /root/.kubeeasy/
-    # echo \"ha=1\" > /root/.kubeeasy/cluster
-    # echo \"vip=${VIRTUAL_IP}\" >> /root/.kubeeasy/cluster
-    # echo \"root_pass=${SSH_PASSWORD}\" >> /root/.kubeeasy/cluster
+    # mkdir -p /root/.kubezcloud/
+    # echo \"ha=1\" > /root/.kubezcloud/cluster
+    # echo \"vip=${VIRTUAL_IP}\" >> /root/.kubezcloud/cluster
+    # echo \"root_pass=${SSH_PASSWORD}\" >> /root/.kubezcloud/cluster
     # "
     # if [[ "${OFFLINE_TAG:-}" == "1" ]]; then
       # log::info "[kube-vip]" "kube-vip init on ${MGMT_NODE}"
       # command::exec "${MGMT_NODE}" "
         # mkdir -p /etc/kubernetes/manifests
-        # \cp \"${TMP_DIR}/kubeeasy/manifests/kube-vip.yaml\" \"/etc/kubernetes/manifests/kube-vip.yaml\"
+        # \cp \"${TMP_DIR}/kubezcloud/manifests/kube-vip.yaml\" \"/etc/kubernetes/manifests/kube-vip.yaml\"
       # "
       # check::exit_code "$?" "kube-vip" "${MGMT_NODE}: kube-vip init" "exit"
     # fi
@@ -1482,11 +1482,11 @@ function kubeadm::join() {
 
   # 配置kube-vip yaml
   # command::exec "${MGMT_NODE}" "
-    # cat ~/.kubeeasy/cluster | grep \"ha\" | cut -d = -f 2
+    # cat ~/.kubezcloud/cluster | grep \"ha\" | cut -d = -f 2
   # "
   # get::command_output "ha_tag" "$?" "exit"
   # command::exec "${MGMT_NODE}" "
-    # cat ~/.kubeeasy/cluster | grep \"vip\" | cut -d = -f 2
+    # cat ~/.kubezcloud/cluster | grep \"vip\" | cut -d = -f 2
   # "
   # get::command_output "vip" "$?" "exit"
   # if [[ "${vip}" != "0" ]]; then
@@ -1498,7 +1498,7 @@ function kubeadm::join() {
         # mkdir -p /etc/kubernetes/manifests
       # "
       # command::scp "${host}" "/etc/kubernetes/manifests/kube-vip.yaml" "/etc/kubernetes/manifests"
-      # command::scp "${host}" "/root/.kubeeasy/" "/root"
+      # command::scp "${host}" "/root/.kubezcloud/" "/root"
       # check::exit_code "$?" "scp" "${host}: scp kube-vip.yaml" "exit"
     # done
   # fi
@@ -1635,7 +1635,7 @@ function kube::status() {
     # -d '
   # {"msgtype": "text",
     # "text": {
-        # "content": "'"kubeeasy install info: ${COMMAND_OUTPUT}"'"
+        # "content": "'"kubezcloud install info: ${COMMAND_OUTPUT}"'"
      # },
     # "at": {
             # "isAtAll": true
@@ -1715,8 +1715,8 @@ function add::network() {
       kube::wait "calico-node" "kube-system" "pods" "k8s-app=calico-node"
     # else
       # # 没有指定离线包就在线安装
-      # local calico_file="${TMP_DIR}/kubeeasy/manifests/calico.yaml"
-      # utils::download_file "${GITHUB_PROXY}https://raw.githubusercontent.com/kongyu666/kubeeasy/main/manifests/calico.yaml" "${calico_file}"
+      # local calico_file="${TMP_DIR}/kubezcloud/manifests/calico.yaml"
+      # utils::download_file "${GITHUB_PROXY}https://raw.githubusercontent.com/kongyu666/kubezcloud/main/manifests/calico.yaml" "${calico_file}"
       # log::info "[network]" "add calico network"
       # command::exec "${MGMT_NODE}" "
         # sed -i 's#10.244.0.0/16#$KUBE_POD_SUBNET#g' \"${calico_file}\"
@@ -1763,7 +1763,7 @@ EOF
   elif [[ "$KUBE_STORAGE" == "openebs" ]]; then
     # 添加openebs存储类
     log::info "[storage]" "add openebs storage class"
-    [[ -f "${OPENEBS_YAML}" ]] || utils::download_file "${GITHUB_PROXY}https://raw.githubusercontent.com/kongyu666/kubeeasy/main/k8s-storage/deploy/openebs/openebs-operator.yaml" "${OPENEBS_YAML}"
+    [[ -f "${OPENEBS_YAML}" ]] || utils::download_file "${GITHUB_PROXY}https://raw.githubusercontent.com/kongyu666/kubezcloud/main/k8s-storage/deploy/openebs/openebs-operator.yaml" "${OPENEBS_YAML}"
     kube::apply "${OPENEBS_YAML}"
     kube::wait "openebs-provisioner" "openebs" "pods" "name=openebs-provisioner"
     sleep 5
@@ -1779,7 +1779,7 @@ EOF
   elif [[ "$KUBE_STORAGE" == "longhorn" ]]; then
     # 添加longhorn存储类
     log::info "[storage]" "add longhorn storage class"
-    [[ -f "${LONGHORN_YAML}" ]] || utils::download_file "${GITHUB_PROXY}https://raw.githubusercontent.com/kongyu666/kubeeasy/main/k8s-storage/deploy/longhorn/longhorn.yaml" "${LONGHORN_YAML}"
+    [[ -f "${LONGHORN_YAML}" ]] || utils::download_file "${GITHUB_PROXY}https://raw.githubusercontent.com/kongyu666/kubezcloud/main/k8s-storage/deploy/longhorn/longhorn.yaml" "${LONGHORN_YAML}"
     kube::apply "${LONGHORN_YAML}"
     kube::wait "csi-provisioner" "longhorn-system" "pods" "app=csi-provisioner"
     sleep 5
@@ -1807,8 +1807,8 @@ function add::ui() {
     local kuboard_file="${OFFLINE_DIR}/manifests/recommended.yaml"
     local kuboardadmin_file="${OFFLINE_DIR}/manifests/dashboard-adminuser.yaml"
         local components_file="${OFFLINE_DIR}/manifests/components.yaml"
-    #[[ -f "${kuboard_file}" ]] || utils::download_file "${GITHUB_PROXY}https://raw.githubusercontent.com/kongyu666/kubeeasy/main/manifests/kuboard-v2.yaml" "${kuboard_file}"
-    #[[ -f "${metrics_file}" ]] || utils::download_file "${GITHUB_PROXY}https://raw.githubusercontent.com/kongyu666/kubeeasy/main/manifests/metrics-server.yaml" "${metrics_file}"
+    #[[ -f "${kuboard_file}" ]] || utils::download_file "${GITHUB_PROXY}https://raw.githubusercontent.com/kongyu666/kubezcloud/main/manifests/kuboard-v2.yaml" "${kuboard_file}"
+    #[[ -f "${metrics_file}" ]] || utils::download_file "${GITHUB_PROXY}https://raw.githubusercontent.com/kongyu666/kubezcloud/main/manifests/metrics-server.yaml" "${metrics_file}"
         kube::apply "${kuboard_file}"
     kube::wait "kubernetes-dashbaord" "kube-system" "pods" "k8s-app=kubernetes-dashboard"
         kube::apply "${kuboardadmin_file}"
@@ -1898,10 +1898,10 @@ function add::virt() {
     local kubevirt_cr="${OFFLINE_DIR}/manifests/kubevirt-cr.yaml"
     #local multus_daemonset="${OFFLINE_DIR}/manifests/multus-daemonset.yaml"
     #local multus_cni_macvlan="${OFFLINE_DIR}/manifests/multus-cni-macvlan.yaml"
-    #[[ -f "${kubevirt_operator}" ]] || utils::download_file "${GITHUB_PROXY}https://raw.githubusercontent.com/kongyu666/kubeeasy/main/kubevirt/deploy/kubevirt-operator.yaml" "${kubevirt_operator}"
-    #[[ -f "${kubevirt_cr}" ]] || utils::download_file "${GITHUB_PROXY}https://raw.githubusercontent.com/kongyu666/kubeeasy/main/kubevirt/deploy/kubevirt-cr.yaml" "${kubevirt_cr}"
-    #[[ -f "${multus_daemonset}" ]] || utils::download_file "${GITHUB_PROXY}https://raw.githubusercontent.com/kongyu666/kubeeasy/main/kubevirt/deploy/multus-daemonset.yml" "${multus_daemonset}"
-    #[[ -f "${multus_cni_macvlan}" ]] || utils::download_file "${GITHUB_PROXY}https://raw.githubusercontent.com/kongyu666/kubeeasy/main/kubevirt/deploy/multus-cni-macvlan.yaml" "${multus_cni_macvlan}"
+    #[[ -f "${kubevirt_operator}" ]] || utils::download_file "${GITHUB_PROXY}https://raw.githubusercontent.com/kongyu666/kubezcloud/main/kubevirt/deploy/kubevirt-operator.yaml" "${kubevirt_operator}"
+    #[[ -f "${kubevirt_cr}" ]] || utils::download_file "${GITHUB_PROXY}https://raw.githubusercontent.com/kongyu666/kubezcloud/main/kubevirt/deploy/kubevirt-cr.yaml" "${kubevirt_cr}"
+    #[[ -f "${multus_daemonset}" ]] || utils::download_file "${GITHUB_PROXY}https://raw.githubusercontent.com/kongyu666/kubezcloud/main/kubevirt/deploy/multus-daemonset.yml" "${multus_daemonset}"
+    #[[ -f "${multus_cni_macvlan}" ]] || utils::download_file "${GITHUB_PROXY}https://raw.githubusercontent.com/kongyu666/kubezcloud/main/kubevirt/deploy/multus-cni-macvlan.yaml" "${multus_cni_macvlan}"
 
     kube::apply "${kubevirt_operator}"
     kube::wait "kubevirt" "kubevirt" "pods" "kubevirt.io=virt-operator"
@@ -1945,11 +1945,11 @@ function reset::node() {
     hostnamectl set-hostname localhost
     systemctl disable kubelet docker containerd 
         # && rm -rf /etc/systemd/system/{docker.service,containerd.service} /etc/systemd/system/kubelet.service*
-    #rm -rf /opt/cni /data/registry /opt/containerd/ /root/.kubeeasy ${TMP_DIR}/kubeeasy 
+    #rm -rf /opt/cni /data/registry /opt/containerd/ /root/.kubezcloud ${TMP_DIR}/kubezcloud 
         rm -rf /opt/cni opt/containerd/ 
-    sed -i -e \"/${KUBE_APISERVER}/d\" -e '/worker/d' -e '/master/d' -e "/^$/d"  -e '/dockerhub.kubeeasy.local/d' /etc/hosts
+    sed -i -e \"/${KUBE_APISERVER}/d\" -e '/worker/d' -e '/master/d' -e "/^$/d"  -e '/dockerhub.kubezcloud.local/d' /etc/hosts
     rm -rf /etc/profile.d/ssh-login-info.sh
-    sed -i '/## kubeeasy managed start/,/## kubeeasy managed end/d' /etc/hosts /etc/security/limits.conf /etc/systemd/system.conf /etc/bashrc /etc/rc.local /etc/audit/rules.d/audit.rules
+    sed -i '/## kubezcloud managed start/,/## kubezcloud managed end/d' /etc/hosts /etc/security/limits.conf /etc/systemd/system.conf /etc/bashrc /etc/rc.local /etc/audit/rules.d/audit.rules
     ipvsadm --clear
     iptables -F && iptables -t nat -F && iptables -t mangle -F && iptables -X
     for int in kube-ipvs0 cni0 docker0 dummy0 flannel.1 cilium_host cilium_net cilium_vxlan lxc_health nodelocalyum 
@@ -2640,7 +2640,7 @@ function utils::images() {
   # 存放镜像的目录
   IMAGES_DIR="${CURRENT_DIR}/${IMAGES_DIR:-./images}"
   # 仓库地址
-  REGISTRY="${IMAGES_REGISTRY:-dockerhub.kubeeasy.local:5000/kongyu}"
+  REGISTRY="${IMAGES_REGISTRY:-dockerhub.kubezcloud.local:5000/kongyu}"
 
   if [[ "$1" == "save" ]]; then
     [ ! -f "${IMAGES_FILE}" ] && {
@@ -2737,7 +2737,7 @@ function transform::data() {
 
 function help::usage() {
   # 使用帮助
-# Script Name    : kubeeasy
+# Script Name    : kubezcloud
 # Version:       : v1.3.2
   cat <<EOF
 
@@ -2756,7 +2756,7 @@ Available Commands:
   install            Install Service Cluster.
 
 Flags:
-  -h, --help               help for kubeeasy
+  -h, --help               help for kubezcloud
 
 Example:
   [install k8s cluster]
@@ -2862,7 +2862,7 @@ EOF
 # main
 ######################################################################################################
 ## 创建日志目录
-#[[ ! -f "/var/log/kubeeasy" ]] && mkdir -p /var/log/kubeeasy
+#[[ ! -f "/var/log/kubezcloud" ]] && mkdir -p /var/log/kubezcloud
 
 [ "$#" == "0" ] && help::usage
 
@@ -3004,7 +3004,7 @@ while [ "${1:-}" != "" ]; do
     ;;
   --images-registry)
     shift
-    IMAGES_REGISTRY=${1:-dockerhub.kubeeasy.local:5000/kongyu}
+    IMAGES_REGISTRY=${1:-dockerhub.kubezcloud.local:5000/kongyu}
     ;;
   # set
   history)
