@@ -1,10 +1,11 @@
 #!/bin/bash
 ###################################################################
 # Script Name    : kubezcloud
-# Version:       : v1.3.2
+# Version:       : v1.3.3
 # Description    : Install kubernetes cluster using kubeadm.
 # Create Date    : 2023-06-06
 # Author         : GUOChen
+# Mainatiner     : Vzerx
 # Email          : 2492246121@qq.com
 # Notable Changes: 1. 新增安装软件包并发执行任务
 #                  2. 新增私有容器registry仓库，用于集群拉取镜像
@@ -13,6 +14,7 @@
 #                  5. 新增集群优化系统配置
 #                  6. 新增集群使用命令输出
 #                  7. 优化部分内容
+#                  8. 对接openEuler22.09安装
 ###################################################################
 
 [[ -n $DEBUG ]] && set -x
@@ -25,7 +27,7 @@ set -o pipefail # Use last non-zero exit code in a pipeline
 ######################################################################################################
 
 # 版本
-KUBE_VERSION="${KUBE_VERSION:-1.25.2}"
+KUBE_VERSION="${KUBE_VERSION:-1.29.5}"
 FLANNEL_VERSION="${FLANNEL_VERSION:-0.14.0}"
 METRICS_SERVER_VERSION="${METRICS_SERVER_VERSION:-0.5.0}"
 CALICO_VERSION="${CALICO_VERSION:-3.19.1}"
@@ -38,7 +40,7 @@ KUBE_DNSDOMAIN="${KUBE_DNSDOMAIN:-cluster.local}"
 KUBE_APISERVER="${KUBE_APISERVER:-apiserver.$KUBE_DNSDOMAIN}"
 KUBE_POD_SUBNET="${KUBE_POD_SUBNET:-10.244.0.0/16}"
 KUBE_SERVICE_SUBNET="${KUBE_SERVICE_SUBNET:-10.96.0.0/16}"
-KUBE_IMAGE_REPO="${KUBE_IMAGE_REPO:-registry.k8s.io}"
+KUBE_IMAGE_REPO="${KUBE_IMAGE_REPO:-registry.aliyuncs.com/google_containers}"
 KUBE_NETWORK="${KUBE_NETWORK:-flannel}"
 KUBE_STORAGE="${KUBE_STORAGE:-nfs}"
 KUBE_UI="${KUBE_UI:-kuboard}"
@@ -201,7 +203,7 @@ function utils::download_file() {
       [ ! -d \"${dest_dirname}\" ] && mkdir -pv \"${dest_dirname}\" 
       wget --timeout=10 --waitretry=3 --tries=5 --retry-connrefused \"${url}\" -O \"${dest}\"
       if [[ \"${unzip_tag}\" == \"unzip\" ]]; then
-        command -v unzip 2>/dev/null || yum install -y unzip
+        command -v unzip 2>/dev/null || dnf install -y unzip
         unzip -o \"${dest}\" -d \"${dest_dirname}\"
 
       fi
@@ -400,62 +402,6 @@ function script::init_node() {
   # 取消确认键
   sed -i 's/#   StrictHostKeyChecking ask/   StrictHostKeyChecking no/g' /etc/ssh/ssh_config
   systemctl restart sshd
-  
-  # Change limits
-  [ ! -f /etc/security/limits.conf_bak ] && cp /etc/security/limits.conf{,_bak}
-  cat << EOF >> /etc/security/limits.conf
-## kubezcloud managed start
-root soft nofile 655360
-root hard nofile 655360
-root soft nproc 655360
-root hard nproc 655360
-root soft core unlimited
-root hard core unlimited
-* soft nofile 655360
-* hard nofile 655360
-* soft nproc 655360
-* hard nproc 655360
-* soft core unlimited
-* hard core unlimited
-## kubezcloud managed end
-EOF
-
-  [ -f /etc/security/limits.d/20-nproc.conf ] && sed -i 's#4096#655360#g' /etc/security/limits.d/20-nproc.conf
-  cat << EOF >> /etc/systemd/system.conf
-## kubezcloud managed start
-DefaultLimitCORE=infinity
-DefaultLimitNOFILE=655360
-DefaultLimitNPROC=655360
-DefaultTasksMax=75%
-## kubezcloud managed end
-EOF
-
-   # Change sysctl
-   cat << EOF >  /etc/sysctl.d/99-kubezcloud.conf
-# https://www.kernel.org/doc/Documentation/sysctl/
-# 开启IP转发.
-net.ipv4.ip_forward = 1
-# 要求iptables不对bridge的数据进行处理
-net.bridge.bridge-nf-call-ip6tables = 1
-net.bridge.bridge-nf-call-iptables = 1
-net.bridge.bridge-nf-call-arptables = 1
-# vm.max_map_count 计算当前的内存映射文件数。
-# mmap 限制（vm.max_map_count）的最小值是打开文件的ulimit数量（cat /proc/sys/fs/file-max）。
-# 每128KB系统内存 map_count应该大约为1。 因此，在32GB系统上，max_map_count为262144。
-# Default: 65530
-vm.max_map_count = 262144
-# Default: 30
-# 0 - 任何情况下都不使用swap。
-# 1 - 除非内存不足（OOM），否则不使用swap。
-vm.swappiness = 0
-# 文件监控
-fs.inotify.max_user_instances=524288
-fs.inotify.max_user_watches=524288
-fs.inotify.max_queued_events=16384
-# 调高 PID 数量
-kernel.pid_max = 65536
-kernel.threads-max=30938
-EOF
 
   # history
   cat <<EOF >>/etc/bashrc
@@ -479,29 +425,7 @@ PS1='\[\033[0m\]\[\033[1;36m\][\u\[\033[0m\]@\[\033[1;32m\]\h\[\033[0m\] \[\033[
 ## kubezcloud managed end
 EOF
 
-
-   # journal
-   mkdir -p /var/log/journal /etc/systemd/journald.conf.d
-   cat << EOF > /etc/systemd/journald.conf.d/99-prophet.conf
-[Journal]
-# 持久化保存到磁盘
-Storage=persistent
-# 压缩历史日志
-Compress=yes
-SyncIntervalSec=5m
-RateLimitInterval=30s
-RateLimitBurst=1000
-# 最大占用空间 10G
-SystemMaxUse=10G
-# 单日志文件最大 200M
-SystemMaxFileSize=200M
-# 日志保存时间 3 周
-MaxRetentionSec=3week
-# 不将日志转发到 syslog
-ForwardToSyslog=no
-EOF
-
-  # motd
+# motd
   cat <<EOF >/etc/profile.d/ssh-login-info.sh
 #!/bin/sh
 #
@@ -626,6 +550,19 @@ EOF
 
   chmod +x /etc/profile.d/ssh-login-info.sh
   echo 'ALL ALL=(ALL) NOPASSWD:/usr/bin/crictl' >/etc/sudoers.d/crictl
+  
+  # Change limits
+  ulimit -SHn 65535;
+  [ ! -f /etc/security/limits.conf_bak ] && cp /etc/security/limits.conf{,_bak}
+  cat <<EOF >> /etc/security/limits.conf
+* soft nofile 655360
+* hard nofile 131072
+* soft nproc 655350
+* hard nproc 655350
+* soft memlock unlimited
+* hard memlock unlimited
+EOF
+  tail /etc/security/limits.conf;
 
   # sync time
   local segment=$(ip route | grep kernel | awk '{print $1}' | head -1)
@@ -635,7 +572,7 @@ EOF
   date
   hwclock -r
 
-  [[ "${OFFLINE_TAG:-}" != "1" ]] && yum install -y chrony
+  [[ "${OFFLINE_TAG:-}" != "1" ]] && dnf install -y chrony
   if [ "${host}" == "${MGMT_NODE}" ]; then
     cat <<EOF >/etc/chrony.conf
 driftfile /var/lib/chrony/drift
@@ -662,29 +599,89 @@ EOF
   systemctl restart chronyd
   systemctl enable chronyd
 
-  module=(
-    #ip_vs
-    #ip_vs_rr
-    #ip_vs_wrr
-    #ip_vs_sh
-    overlay
-    #nf_conntrack
-    br_netfilter
-  )
-  [ -f /etc/modules-load.d/containerd.conf ] && cp -f /etc/modules-load.d/containerd.conf{,_bak}
-  for kernel_module in "${module[@]}"; do
-    /sbin/modinfo -F filename "$kernel_module" |& grep -qv ERROR && echo "$kernel_module" >>/etc/modules-load.d/containerd.conf
-  done
-  systemctl restart systemd-modules-load
-  systemctl enable systemd-modules-load
-  sysctl --system
-  #[ ! -d /home/dashboard-cn ] && mkdir /home/dashboard-cn;
-  modprobe br_netfilter;
-  #sed -i 's|#oom_score = 0|oom_score = -999|' /etc/containerd/config.toml;
-  grep single-request-reopen /etc/resolv.conf || sed -i '1ioptions timeout:2 attempts:3 rotate single-request-reopen' /etc/resolv.conf
-
   ipvsadm --clear
   iptables -F && iptables -t nat -F && iptables -t mangle -F && iptables -X
+
+  # 下面内容在欧拉环境注释，也许是拿来做题目的
+
+#   [ -f /etc/security/limits.d/20-nproc.conf ] && sed -i 's#4096#655360#g' /etc/security/limits.d/20-nproc.conf
+#   cat << EOF >> /etc/systemd/system.conf
+# ## kubezcloud managed start
+# DefaultLimitCORE=infinity
+# DefaultLimitNOFILE=655360
+# DefaultLimitNPROC=655360
+# DefaultTasksMax=75%
+# ## kubezcloud managed end
+# EOF
+
+   # Change sysctl
+#    cat << EOF >  /etc/sysctl.d/99-kubezcloud.conf
+# # https://www.kernel.org/doc/Documentation/sysctl/
+# # 开启IP转发.
+# net.ipv4.ip_forward = 1
+# # 要求iptables不对bridge的数据进行处理
+# net.bridge.bridge-nf-call-ip6tables = 1
+# net.bridge.bridge-nf-call-iptables = 1
+# net.bridge.bridge-nf-call-arptables = 1
+# # vm.max_map_count 计算当前的内存映射文件数。
+# # mmap 限制（vm.max_map_count）的最小值是打开文件的ulimit数量（cat /proc/sys/fs/file-max）。
+# # 每128KB系统内存 map_count应该大约为1。 因此，在32GB系统上，max_map_count为262144。
+# # Default: 65530
+# vm.max_map_count = 262144
+# # Default: 30
+# # 0 - 任何情况下都不使用swap。
+# # 1 - 除非内存不足（OOM），否则不使用swap。
+# vm.swappiness = 0
+# # 文件监控
+# fs.inotify.max_user_instances=524288
+# fs.inotify.max_user_watches=524288
+# fs.inotify.max_queued_events=16384
+# # 调高 PID 数量
+# kernel.pid_max = 65536
+# kernel.threads-max=30938
+# EOF
+
+  
+   # journal
+#    mkdir -p /var/log/journal /etc/systemd/journald.conf.d
+#    cat << EOF > /etc/systemd/journald.conf.d/99-prophet.conf
+# [Journal]
+# # 持久化保存到磁盘
+# Storage=persistent
+# # 压缩历史日志
+# Compress=yes
+# SyncIntervalSec=5m
+# RateLimitInterval=30s
+# RateLimitBurst=1000
+# # 最大占用空间 10G
+# SystemMaxUse=10G
+# # 单日志文件最大 200M
+# SystemMaxFileSize=200M
+# # 日志保存时间 3 周
+# MaxRetentionSec=3week
+# # 不将日志转发到 syslog
+# ForwardToSyslog=no
+# EOF
+
+  # module=(
+  #   overlay
+  #   br_netfilter
+  #   ip_tables
+  #   iptable_filter
+  # )
+  # [ -f /etc/modules-load.d/containerd.conf ] && cp -f /etc/modules-load.d/containerd.conf{,_bak}
+  # for kernel_module in "${module[@]}"; do
+  #   /sbin/modinfo -F filename "$kernel_module" |& grep -qv ERROR && echo "$kernel_module" >>/etc/modules-load.d/containerd.conf
+  # done
+  # systemctl restart systemd-modules-load
+  # systemctl enable systemd-modules-load
+  # sysctl --system
+  #[ ! -d /home/dashboard-cn ] && mkdir /home/dashboard-cn;
+  # modprobe br_netfilter;
+  #sed -i 's|#oom_score = 0|oom_score = -999|' /etc/containerd/config.toml;
+  # grep single-request-reopen /etc/resolv.conf || sed -i '1ioptions timeout:2 attempts:3 rotate single-request-reopen' /etc/resolv.conf
+
+  
 }
 
 
@@ -696,14 +693,14 @@ function script::install_containerd() {
   # if [[ "${OFFLINE_TAG:-}" != "1" ]]; then
         # [ -f /usr/bin/docker ] && yum remove -y docker-ce docker-ce-cli;
         # [ -f /usr/bin/containerd ] && yum remove -y containerd.io;
-  # yum install -y "docker-ce${version}" "docker-ce-cli${version}" containerd.io bash-completion;
+  # dnf install -y "docker-ce${version}" "docker-ce-cli${version}" containerd.io bash-completion;
   # [[ ! -f "/usr/bin/docker" ]] && {
     # tar -zxvf ${OFFLINE_DIR}/packages/docker-v20.10.9.tar.gz -C /tmp
     # cp -rvf /tmp/docker/* /usr/bin/
     # mv /usr/bin/{docker.service,containerd.service} /etc/systemd/system/ || true
     # rm -rf /tmp/docker
   # }
-  #[ -e /etc/cni/net.d/ ] && yum  -y remove kubernetes-cni &&  yum install -y --skip-broken   /tmp/packages/*kube*.rpm
+  #[ -e /etc/cni/net.d/ ] && yum  -y remove kubernetes-cni &&  dnf install -y --skip-broken   /tmp/packages/*kube*.rpm
   #[ -f /usr/share/bash-completion/completions/docker ] && cp -f /usr/share/bash-completion/completions/docker /etc/bash_completion.d/;
   #[ ! -d ${DOCKER_DATA_ROOT} ] && mkdir -p ${DOCKER_DATA_ROOT}
   #[ ! -d /etc/docker ] && mkdir /etc/docker
@@ -714,19 +711,33 @@ nameserver 114.114.114.114
 nameserver 223.5.5.5
 EOF
     #[ ! -d /home/dashboard-cn ] && mkdir /home/dashboard-cn;
-        modprobe overlay;
+    modprobe overlay;
     modprobe br_netfilter;
-    cat  > /etc/sysctl.d/k8s.conf <<EOF
-net.bridge.bridge-nf-call-ip6tables = 1
+    modprobe ip_tables;
+    modprobe iptable_filter;
+    cat <<EOF > /etc/modules-load.d/containerd.conf
+overlay
+br_netfilter
+ip_tables
+iptable_filter
+EOF
+    cat  > /etc/sysctl.d/99-kubernetes-cri.conf <<EOF
 net.bridge.bridge-nf-call-iptables = 1
+net.ipv4.ip_forward = 1
+net.bridge.bridge-nf-call-ip6tables = 1
 EOF
 
-    sysctl -p /etc/sysctl.d/k8s.conf > /dev/null 2>&1;
-        sysctl --system;
+    sysctl -p /etc/sysctl.d/99-kubernetes-cri.conf > /dev/null 2>&1;
+    sysctl --system;
     mkdir -p /etc/containerd;
     containerd config default | sudo tee /etc/containerd/config.toml;
     sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' /etc/containerd/config.toml;
-    sed -i 's#registry.k8s.io/pause:3.6#registry.k8s.io/pause:3.8#' /etc/containerd/config.toml;
+    sed -i 's|registry.k8s.io/pause:3.6|registry.aliyuncs.com/google_containers/pause:3.9|g' /etc/containerd/config.toml;
+     systemctl enable containerd > /dev/null 2>&1;
+    systemctl restart containerd;
+    ctr -n k8s.io images import ${OFFLINE_DIR}/images/images.tar;
+    systemctl start docker;
+    systemctl enable docker > /dev/null 2>&1
     
 
     cat <<EOF >/etc/crictl.yaml
@@ -739,15 +750,23 @@ disable-pull-on-run: false
 EOF
   systemctl enable containerd;
   systemctl restart containerd;
-  local IMAGE_NUM=$(crictl images |wc -l)
-  if [[ "$IMAGE_NUM"  -ne "40" ]]; then
-    ctr -n k8s.io images import ${OFFLINE_DIR}/images/images.tar; 
-  fi
+  # local IMAGE_NUM=$(crictl images |wc -l)
+  # if [[ "$IMAGE_NUM"  -ne "40" ]]; then
+  #   ctr -n k8s.io images import ${OFFLINE_DIR}/images/images.tar; 
+  # fi
+  log::info "[helm]" "install the helm";
+  log::info "[virtctl]" "install the virtctl";
+  log::info "[docker-compose]" "install the docker-compose";
+  log::info "[istioctl]" "install the istioctl";
   log::info "[nerdctl]" "install the nerdctl";
+  log::info "[buildkitd]" "install the buildkitd";
   cp ${OFFLINE_DIR}/tools/* /usr/bin/;
+  chmod +x /usr/bin/helm;
+  chmod +x /usr/bin/virtctl;
+  chmod +x /usr/bin/docker-compose;
+  chmod +x /usr/bin/istioctl;
   chmod +x /usr/bin/nerdctl;
-  log::info "[buildkit]" "install the buildkit";
-  chmod +x /usr/bin/buildkitd;
+  chmod +x /usr/bin/buildkit*;
   chmod +x /usr/bin/buildctl;
   cat > /etc/systemd/system/buildkit.service <<EOF
 [Unit]
@@ -808,7 +827,7 @@ function check::command_exists() {
   else
     log::warning "[check]" "I require $cmd but it's not installed."
     log::warning "[check]" "install $package package."
-    command::exec "127.0.0.1" "yum install -y ${package}"
+    command::exec "127.0.0.1" "dnf install -y ${package}"
     check::exit_code "$?" "check" "$package install" "exit"
   fi
 }
@@ -1396,7 +1415,7 @@ nodeRegistration:
   criSocket: unix:///var/run/containerd/containerd.sock
   imagePullPolicy: IfNotPresent
   taints: null
-  pod-infra-container-image: registry.k8s.io/pause:3.8
+  pod-infra-container-image: registry.aliyuncs.com/google_containers/pause:3.9
 ---
 apiServer:
   timeoutForControlPlane: 4m0s
@@ -1417,7 +1436,7 @@ apiVersion: kubeadm.k8s.io/v1beta3
 certificatesDir: /etc/kubernetes/pki
 clusterName: kubernetes
 controllerManager: {}
-yum: {}
+dns: {}
 etcd:
   local:
     dataDir: /var/lib/etcd
@@ -1752,7 +1771,7 @@ EOF
     "
     sed -i "s#127.0.0.1#${MGMT_NODE}#g" ${NFS_YAML}
     kube::apply "${NFS_YAML}"
-    kube::wait "nfs-client-provisioner" "kube-system" "pods" "app=nfs-client-provisioner"
+    kube::wait "nfs-storageclass-provisioner" "kube-system" "pods" "app=nfs-storageclass-provisioner"
   elif [[ "$KUBE_STORAGE" == "local" ]]; then
     # 添加nfs和openebs local存储类
     log::info "[storage]" "add local storage class"
@@ -1831,19 +1850,23 @@ function add::ui() {
 function add::harbor(){
   local TMP_DIR="/tmp"
   local MGMT_NODE=${MGMT_NODE}
-  #local LOCAL_HOST=$(cat /etc/hosts |grep master | awk '{print $1}')
+  local HOSTS=$(cat /etc/hosts |grep k8s | awk '{print $1}')
   if [[ "$KUBE_HARBOR" == "harbor" ]]; then
     log::info "[harbor]" "add harbor"
+        # 加载镜像
+        for host in $HOSTS; do
+          command::exec "${host}" "ctr -n k8s.io images import ${OFFLINE_DIR}/images/harbor.tar"
+        done
         command::exec "${MGMT_NODE}" "
           kubectl create ns harbor
-          sed -i 's#127.0.0.1:80#$MGMT_NODE:80#g' /tmp/kubezcloud/harbor/values.yaml
-          helm install harbor -n harbor /tmp/kubezcloud/harbor/
+          sed -i 's#127.0.0.1:80#$MGMT_NODE:80#g' "${OFFLINE_DIR}/harbor/values.yaml"
+          helm install harbor -n harbor "${OFFLINE_DIR}/harbor/"
     "
         kube::wait "harbor-nginx" "harbor" "pods" "component=nginx"
         kube::wait "harbor-core" "harbor" "pods" "component=core"
         kube::wait "harbor-jobservice" "harbor" "pods" "component=jobservice"
-        kube::wait "notary-signer" "harbor" "pods" "component=notary-signer"
-    #log::access
+        # kube::wait "notary-signer" "harbor" "pods" "component=notary-signer"
+    log::access
   # elif [[ "$KUBE_VIRT" == "kata" ]]; then
     # echo "none."
   else
@@ -1853,12 +1876,17 @@ function add::harbor(){
 function add::istio(){
   local TMP_DIR=${TMP_DIR}
   local OFFLINE_DIR=${OFFLINE_DIR}
-  if [[ "$KUBE_ISTIO" == "istio" ]]; then
-    local GRAFANA_FILE="${OFFLINE_DIR}/manifests/grafana.yaml"
-        local JAEGER_FILE="${OFFLINE_DIR}/manifests/jaeger.yaml"
-        local KIALI_FILE="${OFFLINE_DIR}/manifests/kiali.yaml"
-        local PROMETHEUS_FILE="${OFFLINE_DIR}/manifests/prometheus.yaml"
+  local HOSTS=$(cat /etc/hosts |grep k8s | awk '{print $1}')
+  # if [[ "$KUBE_ISTIO" == "istio" ]]; then
+    # local GRAFANA_FILE="${OFFLINE_DIR}/manifests/grafana.yaml"
+        # local JAEGER_FILE="${OFFLINE_DIR}/manifests/jaeger.yaml"
+        # local KIALI_FILE="${OFFLINE_DIR}/manifests/kiali.yaml"
+        # local PROMETHEUS_FILE="${OFFLINE_DIR}/manifests/prometheus.yaml"
     log::info "[istio]" "add istio"
+        # 加载镜像
+        for host in $HOSTS; do
+          command::exec "${host}" "ctr -n k8s.io images import ${OFFLINE_DIR}/images/istio.tar"
+        done
         command::exec "${MGMT_NODE}" "
           istioctl install -y --set profile=demo
         "
@@ -1866,25 +1894,26 @@ function add::istio(){
         kube::wait "istio-egressgateway" "istio-system" "pods" "app=istio-egressgateway"
         kube::wait "istio-ingressgateway" "istio-system" "pods" "app=istio-ingressgateway"
 
-        kube::apply "${GRAFANA_FILE}"
-        kube::apply "${JAEGER_FILE}"
-        kube::apply "${KIALI_FILE}"
-        kube::apply "${PROMETHEUS_FILE}"
-        kube::wait "grafana" "istio-system" "pods" "app.kubernetes.io/instance=grafana"
-        kube::wait "jaeger" "istio-system" "pods" "app=jaeger"
-        kube::wait "kiali" "istio-system" "pods" "app.kubernetes.io/instance=kiali"
-        kube::wait "prometheus" "istio-system" "pods" "app=prometheus"
-        #log::access
+        # kube::apply "${GRAFANA_FILE}"
+        # kube::apply "${JAEGER_FILE}"
+        # kube::apply "${KIALI_FILE}"
+        # kube::apply "${PROMETHEUS_FILE}"
+        # kube::wait "grafana" "istio-system" "pods" "app.kubernetes.io/instance=grafana"
+        # kube::wait "jaeger" "istio-system" "pods" "app=jaeger"
+        # kube::wait "kiali" "istio-system" "pods" "app.kubernetes.io/instance=kiali"
+        # kube::wait "prometheus" "istio-system" "pods" "app=prometheus"
+        log::access
 
-  else
-    log::warning "[ui]" "No $KUBE_UI config."
-  fi
+  # else
+    # log::warning "[ui]" "No $KUBE_UI config."
+  #fi
 
 }
 function add::virt() {
   # 添加kubevirt
   local TMP_DIR=${TMP_DIR}
   local OFFLINE_DIR=${OFFLINE_DIR}
+  local HOSTS=$(cat /etc/hosts |grep k8s | awk '{print $1}')
 
   if [[ "$KUBE_VIRT" == "kubevirt" ]]; then
     # log::info "[offline]" "unzip offline kubvirt package on local."
@@ -1894,6 +1923,10 @@ function add::virt() {
         # "
     # check::exit_code "$?" "offline" "unzip offline kubvirt package"
     log::info "[virt]" "add kubevirt"
+    # 加载镜像
+    for host in $HOSTS; do
+      command::exec "${host}" "ctr -n k8s.io images import ${OFFLINE_DIR}/images/kubevirt.tar"
+    done
     local kubevirt_operator="${OFFLINE_DIR}/manifests/kubevirt-operator.yaml"
     local kubevirt_cr="${OFFLINE_DIR}/manifests/kubevirt-cr.yaml"
     #local multus_daemonset="${OFFLINE_DIR}/manifests/multus-daemonset.yaml"
@@ -1919,6 +1952,7 @@ function add::virt() {
        # kubectl get pod -n kubevirt -o wide
        # echo ''
     # " && printf "%s \n" "${COMMAND_OUTPUT}"
+    log::access
 
   # elif [[ "$KUBE_VIRT" == "kata" ]]; then
     # echo "none."
@@ -1957,7 +1991,7 @@ function reset::node() {
       [ -d /sys/class/net/\${int} ] && ip link delete \${int}
     done
     modprobe -r ipip
-        [ -e /etc/cni/net.d/ ] && yum -y remove kubernetes-cni &&  yum install -y  /tmp/packages/*kube*.rpm
+        [ -e /etc/cni/net.d/ ] && yum -y remove kubernetes-cni &&  dnf install -y  /tmp/packages/*kube*.rpm
         rm -rf /data/nfs
     echo done.
   "
@@ -2055,7 +2089,7 @@ function offline::load() {
   local role="${1:-}"
   local hosts=""
   local UPGRADE_KERNEL_TAG="${UPGRADE_KERNEL_TAG:-0}"
-  local OFFLINE_DIR="${TMP_DIR}/kubezcloud"
+  local OFFLINE_DIR=${OFFLINE_DIR}
 
   if [[ "${role}" == "master" ]]; then
     hosts="${MASTER_NODES}"
@@ -2089,7 +2123,7 @@ function offline::cluster() {
   }
 
   log::info "[offline]" "unzip offline package on local."
-  [[ ! -d "${TMP_DIR}/kubezcloud" ]] && tar -zxf "${OFFLINE_FILE}" -C "${TMP_DIR}/" || true
+  [[ ! -d "${OFFLINE_DIR}" ]] && tar -zxf "${OFFLINE_FILE}" -C "${TMP_DIR}/" || true
   check::exit_code "$?" "offline" "unzip offline package"
 
   offline::load "master"
@@ -2126,7 +2160,7 @@ function offline::load_depend() {
       index=1
 
       
-      yum install -y  ${RPMS_DIR}/*.rpm
+      dnf install -y  ${RPMS_DIR}/*.rpm
       echo \$! > /tmp/pid_temp/temp\${index}.pid
       ((index++))
       
@@ -2161,7 +2195,7 @@ function offline::cluster_depend() {
 
   log::info "[install]" "install sshpass packages on local."
   rm -rf /etc/yum.repos.d/*
-  [[ ! -f "/usr/bin/sshpass" ]] && yum install -y  /tmp/packages/sshpass-*.rpm &>$LOG_FILE || true
+  [[ ! -f "/usr/bin/sshpass" ]] && dnf install -y  /tmp/packages/sshpass-*.rpm &>$LOG_FILE || true
   check::exit_code "$?" "install" "install sshpass packages"
 
   offline::load_depend
@@ -2197,7 +2231,7 @@ function offline::load_kernel() {
       rm -rf /etc/yum.repos.d/*
       mkdir -p /tmp/pid_temp/
       index=1
-      nohup yum install -y --skip-broken ${RPMS_DIR}/*.rpm &> /dev/null &
+      nohup dnf install -y --skip-broken ${RPMS_DIR}/*.rpm &> /dev/null &
       echo \$! > /tmp/pid_temp/temp\${index}.pid
     "
     check::exit_code "$?" "install" "${host}: install kernel packages in nohup" "exit"
@@ -2316,13 +2350,13 @@ function init::cluster() {
   # 5. 加入集群
   kubeadm::join
   # 6. 添加web ui
-  add::ui
+  # add::ui
   # 7. 添加storage
   add::storage
   # 8. 查看集群状态
-  add::virt
-  add::istio
-  add::harbor
+  # add::virt
+  # add::istio
+  # add::harbor
   kube::status
   log::access
   
@@ -2739,33 +2773,33 @@ function help::usage() {
   # 使用帮助
 # Script Name    : kubezcloud
 # Version:       : v1.3.2
+  SCRIPT_NAME="$(basename "$0")"
   cat <<EOF
 
 Install kubernetes cluster using kubeadm.
 Documentation: https://github.com/zcloudedu/kubezcloud
 
 Usage:
-  kubeeasy [command]
+  ${SCRIPT_NAME} [command]
 
 Available Commands:
   install            Install Service cluster.
 
 Flags:
-  -h, --help               help for kubeeasy
+  -h, --help               help for kubezcloud
 
 Example:
   [install k8s cluster]
-  kubeeasy install k8s \
-  --master 10.24.2.10 \
-  --worker 10.24.2.20,10.24.2.30,10.24.2.40 \
-  --user root \
-  --password Abc@1234 \
+  ${SCRIPT_NAME} install k8s \\
+  --master 10.200.2.10 \\
+  --worker 10.200.2.20,10.200.2.30,10.200.2.40 \\
+  --user root \\
+  --password Abc@1234 \\
   --version 1.29.5
 
-Use "kubeeasy [command] --help" for more information about a command.
+Use "${SCRIPT_NAME} [command] --help" for more information about a command.
 
   See detailed log >> /var/log/kubeinstall.log 
-  
 EOF
   exit 1
 }
@@ -2777,14 +2811,14 @@ EOF
 # Email          : 2492246121@qq.com
 function help::details() {
   # 使用帮助
-
+  SCRIPT_NAME="$(basename "$0")"
   cat <<EOF
   
 Install kubernetes cluster using kubeadm.
-Documentation: https://github.com/yidaoyun/kubeeasy
+Documentation: https://github.com/zcloudedu/kubezcloud
 
 Usage:
-  kubeeasy [command]
+  ${SCRIPT_NAME} [command]
 
 Available Commands:
   install         Install cluster service.
@@ -2794,9 +2828,9 @@ Available Commands:
   del             Remove node from the cluster.
 
 Flag:
-  -m,--master          master node, example: 10.24.2.10
-  -w,--worker          work node, example: 10.24.2.11,10.24.2.12 or 10.24.2.10-10.24.2.20
-  -host,--host         other node, example: 10.24.2.11,10.24.2.12 or 10.24.2.10-10.24.2.20
+  -m,--master          master node, example: 10.200.2.10
+  -w,--worker          work node, example: 10.200.2.20,10.200.2.30,10.200.2.40
+  -host,--host         other node, example: 10.200.2.11,10.200.2.12 or 10.200.2.10-10.200.2.20
   --add                add k8s cluster node.
   --delete             delete k8s cluster node.
   -u,--user            ssh user, default: root
@@ -2808,35 +2842,34 @@ Flag:
 
 Example:
   [install dependencies package cluster]
-  kubeeasy install dependencies \
-  --host 10.24.2.10,10.24.2.20,10.24.2.30 \
-  --user root \
-  --password Abc@1234 \
+  ${SCRIPT_NAME} install dependencies \\
+  --host 10.200.2.10,10.200.2.20,10.200.2.30 \\
+  --user root \\
+  --password Abc@1234 \\
   --offline-file /opt/dependencies/packages.tar.gz
 
   [install k8s cluster offline]
-  kubeeasy install kubernetes \
-  --master 10.24.2.10 \
-  --worker 10.24.2.20,10.24.2.30,10.24.2.40 \
-  --user root \
-  --password Abc@1234 \
-  --version 1.29.5 \
-  --offline-file /opt/kubeeasy.tar.gz
+  ${SCRIPT_NAME} install kubernetes \\
+  --master 10.200.2.10 \\
+  --worker 10.200.2.20,10.200.2.30,10.200.2.40 \\
+  --user root \\
+  --password Abc@1234 \\
+  --version 1.29.5 \\
+  --offline-file /opt/kubezcloud.tar.gz
 
   [add harbor]
-  kubeeasy add --registry harbor
+  ${SCRIPT_NAME} add --registry harbor
 
   [add virt]
-  kubeeasy add --virt kubevirt
+  ${SCRIPT_NAME} add --virt kubevirt
 
   [add istio]
-  kubeeasy add --istio istio
+  ${SCRIPT_NAME} add --istio istio
 
   More features are expected.
 
 
   See detailed log >> /var/log/kubeinstall.log
-  
 EOF
   exit 1
 }
@@ -2947,26 +2980,21 @@ while [ "${1:-}" != "" ]; do
     STORAGE_TAG=1
     KUBE_STORAGE=${1:-$KUBE_STORAGE}
     ;;
-  -ui | --ui)
+  --registry)
     shift
-    UI_TAG=1
-    KUBE_UI=${1:-$KUBE_UI}
+    HARBOR_TAG=1
+    KUBE_HARBOR=${1:-$KUBE_HARBOR}
     ;;
-  -vm | --virt)
+  --istio)
+    shift
+    ISTIO_TAG=1
+    KUBE_ISTIO=${1:-$KUBE_ISTIO}
+    ;;
+  --virt)
     shift
     VIRT_TAG=1
     KUBE_VIRT=${1:-$KUBE_VIRT}
     ;;
-  -so | --istio)
-    shift
-    ISTIO_TAG=1
-    KUBE_ISTIO=${1:-$KUBE_ISTIO}
-        ;;
-  -hb | --harbor)
-    shift
-    HARBOR_TAG=1
-    KUBE_HARBOR=${1:-$KUBE_HARBOR}
-        ;;
   # image
   save)
     SAVE_IMAGE_TAG=1
@@ -3179,10 +3207,6 @@ elif [[ "${ADD_TAG:-}" == "1" ]]; then
     add::storage
     add=1
   }
-  [[ "${UI_TAG:-}" == "1" ]] && {
-    add::ui
-    add=1
-  }
   [[ "${VIRT_TAG:-}" == "1" ]] && {
     add::virt
     add=1
@@ -3193,6 +3217,10 @@ elif [[ "${ADD_TAG:-}" == "1" ]]; then
   }
   [[ "${HARBOR_TAG:-}" == "1" ]] && {
     add::harbor
+    add=1
+  }
+  [[ "${UI_TAG:-}" == "1" ]] && {
+    add::ui
     add=1
   }
   [[ "$MASTER_NODES" != "" || "$WORKER_NODES" != "" ]] && {
